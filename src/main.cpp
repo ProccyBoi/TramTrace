@@ -35,7 +35,7 @@ namespace {
 
 using tramtrace::Strip;
 
-constexpr char kFirmwareVersion[] = "0.2.0";
+constexpr char kFirmwareVersion[] = "0.2.1";
 constexpr uint8_t kDefaultBrightness = 20;
 constexpr uint8_t kMaximumBrightness = 64;
 constexpr uint8_t kStatusBrightness = 12;
@@ -68,13 +68,11 @@ struct PixelValue {
   uint8_t state = 0;
   uint8_t grace = 0;
   uint32_t colour = 0;
-  uint32_t alternateColour = 0;
 };
 
 struct CandidatePixel {
   uint8_t state = 0;
   uint32_t colour = 0;
-  uint32_t alternateColour = 0;
 };
 
 enum class StatusCode : uint8_t {
@@ -502,13 +500,9 @@ void accumulateCandidate(Strip strip, uint8_t pixel, uint8_t state,
   }
 
   CandidatePixel &candidate = gCandidate[stripNumber][pixel];
-  if (state > candidate.state) {
+  if (tramtrace::shouldReplaceCandidate(candidate.state, state)) {
     candidate.state = state;
     candidate.colour = colour;
-    candidate.alternateColour = 0;
-  } else if (state == candidate.state && candidate.colour != colour &&
-             candidate.alternateColour != colour) {
-    candidate.alternateColour = colour;
   }
 }
 
@@ -561,14 +555,12 @@ void applyCandidateFrame() {
       if (candidate.state > 0) {
         current.state = candidate.state;
         current.colour = candidate.colour;
-        current.alternateColour = candidate.alternateColour;
         current.grace = kGracePayloads;
       } else if (current.grace > 0) {
         --current.grace;
       } else {
         current.state = 0;
         current.colour = 0;
-        current.alternateColour = 0;
       }
       anyLit = anyLit || current.state > 0;
     }
@@ -595,13 +587,10 @@ void renderFrame(bool force = false) {
     for (uint16_t pixel = 0; pixel < tramtrace::kStripLengths[strip];
          ++pixel) {
       const PixelValue &value = gPixels[strip][pixel];
-      if (value.state == 0 ||
-          !tramtrace::stateIsVisible(value.state, now)) {
+      if (!tramtrace::stateIsVisible(value.state)) {
         continue;
       }
-      gStrips[strip].setPixelColor(
-          pixel, tramtrace::selectExactColour(
-                     value.colour, value.alternateColour, now));
+      gStrips[strip].setPixelColor(pixel, value.colour);
     }
     gStrips[strip].show();
   }
@@ -758,14 +747,9 @@ void placeSimulationTram(const tramtrace::StationBinding &binding,
   PixelValue &value = gPixels[strip][pixel];
   const uint32_t colour = tramtrace::routeColour(binding.route);
 
-  if (state > value.state) {
+  if (tramtrace::shouldReplaceCandidate(value.state, state)) {
     value.state = state;
     value.colour = colour;
-    value.alternateColour = 0;
-  } else if (state == value.state && value.colour != colour &&
-             value.alternateColour != colour) {
-    // L2 and L3 physically share their Moore Park-Circular Quay pixels.
-    value.alternateColour = colour;
   }
   value.grace = 0;
   gFrameIsClear = false;

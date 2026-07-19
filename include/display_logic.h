@@ -4,34 +4,17 @@
 
 namespace tramtrace {
 
-// Distance states are encoded with on/off timing instead of RGB intensity.
-// Every visible pulse therefore uses the route's unmodified official colour.
-constexpr uint32_t kFarCycleMs = 1600;
-constexpr uint32_t kFarOnMs = 220;
-constexpr uint32_t kApproachingCycleMs = 800;
-constexpr uint32_t kApproachingOnMs = 520;
-constexpr uint32_t kSharedColourSlotMs = 500;
-
-constexpr bool stateIsVisible(uint8_t state, uint32_t nowMs) {
-  if (state == 1) {
-    return nowMs % kFarCycleMs < kFarOnMs;
-  }
-  if (state == 2) {
-    return nowMs % kApproachingCycleMs < kApproachingOnMs;
-  }
-  return state >= 3;
+// The display is intentionally binary: every active distance state is solid,
+// and state zero is off. The route RGB value is never amplitude-modulated.
+constexpr bool stateIsVisible(uint8_t state) {
+  return state > 0;
 }
 
-// L2 and L3 share physical pixels from Moore Park to Circular Quay. When
-// equally important vehicles occupy the same direction pixel, alternate the
-// two exact route colours instead of inventing a blended colour.
-constexpr uint32_t selectExactColour(uint32_t primary,
-                                     uint32_t alternate,
-                                     uint32_t nowMs) {
-  if (alternate == 0) {
-    return primary;
-  }
-  return (nowMs / kSharedColourSlotMs) % 2 == 0 ? primary : alternate;
+// Shared L2/L3 pixels keep their existing colour on an equal-state tie. This
+// makes the result deterministic and solid instead of blinking between routes.
+constexpr bool shouldReplaceCandidate(uint8_t currentState,
+                                      uint8_t nextState) {
+  return nextState > currentState;
 }
 
 }  // namespace tramtrace

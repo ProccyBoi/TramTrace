@@ -23,8 +23,7 @@ board's KiCad schematic and PCB layout.
 
 - `src/main.cpp` — ESP32 firmware, setup portal, live polling and LED effects.
 - `include/station_map.h` — compiled GPIO, strip and direction-to-pixel map.
-- `include/display_logic.h` — hue-preserving state pulses and shared-route
-  colour selection.
+- `include/display_logic.h` — solid/off display and shared-route priority.
 - `hardware/STATION_MAPPING.csv` — schematic/layout cross-reference including
   every LED reference and current TfNSW parent stop ID.
 - `hardware/README.md` — electrical chains and layout exceptions.
@@ -96,12 +95,12 @@ current GTFS route colours: L1 `#BE1622`, L2 `#DD1E25`, L3 `#781140`, and L4
 power cycle; send `stop` over serial to clear the saved replay setting and
 return to normal setup/live operation.
 
-Live distance states never dim individual RGB channels. A far tram flashes
-briefly, an approaching tram pulses, and a tram at a station stays solid; every
-visible frame uses the route's complete official RGB value. When equally ranked
-L2 and L3 trams share one physical trunk pixel, firmware alternates their exact
-colours instead of blending a fifth colour. The default activation bands are
-120 m, 450 m, and 800 m.
+The route display is binary: every non-zero live state is continuously solid
+and state zero is off. Individual RGB channels are never dimmed, so every lit
+pixel uses the route's complete official RGB value. A shared L2/L3 trunk pixel
+uses the stronger state; an equal-state tie keeps one deterministic colour
+instead of blinking or blending. The default activation bands are 120 m,
+450 m, and 800 m.
 
 ## Run the backend
 

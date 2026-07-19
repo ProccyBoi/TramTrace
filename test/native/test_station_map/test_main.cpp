@@ -29,25 +29,18 @@ void test_route_colours_match_current_gtfs() {
   TEST_ASSERT_EQUAL_HEX32(0xBB2043, kRouteColours[3]);
 }
 
-void test_distance_states_preserve_exact_route_colour() {
-  constexpr uint32_t l1 = 0xBE1622;
-  TEST_ASSERT_TRUE(stateIsVisible(1, 0));
-  TEST_ASSERT_FALSE(stateIsVisible(1, kFarOnMs));
-  TEST_ASSERT_TRUE(stateIsVisible(2, 0));
-  TEST_ASSERT_FALSE(stateIsVisible(2, kApproachingOnMs));
-  TEST_ASSERT_TRUE(stateIsVisible(3, 799));
-  TEST_ASSERT_EQUAL_HEX32(l1, selectExactColour(l1, 0, 0));
-  TEST_ASSERT_EQUAL_HEX32(l1, selectExactColour(l1, 0, 700));
+void test_every_active_distance_state_is_solid() {
+  TEST_ASSERT_FALSE(stateIsVisible(0));
+  TEST_ASSERT_TRUE(stateIsVisible(1));
+  TEST_ASSERT_TRUE(stateIsVisible(2));
+  TEST_ASSERT_TRUE(stateIsVisible(3));
 }
 
-void test_shared_l2_l3_pixel_alternates_without_blending() {
-  constexpr uint32_t l2 = 0xDD1E25;
-  constexpr uint32_t l3 = 0x781140;
-  TEST_ASSERT_EQUAL_HEX32(l2, selectExactColour(l2, l3, 0));
-  TEST_ASSERT_EQUAL_HEX32(l3,
-                          selectExactColour(l2, l3, kSharedColourSlotMs));
-  TEST_ASSERT_EQUAL_HEX32(l2,
-                          selectExactColour(l2, l3, 2 * kSharedColourSlotMs));
+void test_shared_pixel_ties_keep_a_stable_colour() {
+  TEST_ASSERT_TRUE(shouldReplaceCandidate(0, 1));
+  TEST_ASSERT_TRUE(shouldReplaceCandidate(1, 2));
+  TEST_ASSERT_FALSE(shouldReplaceCandidate(2, 2));
+  TEST_ASSERT_FALSE(shouldReplaceCandidate(3, 2));
 }
 
 void test_every_binding_is_in_bounds() {
@@ -110,8 +103,8 @@ int main(int, char **) {
   UNITY_BEGIN();
   RUN_TEST(test_hardware_constants_match_schematic);
   RUN_TEST(test_route_colours_match_current_gtfs);
-  RUN_TEST(test_distance_states_preserve_exact_route_colour);
-  RUN_TEST(test_shared_l2_l3_pixel_alternates_without_blending);
+  RUN_TEST(test_every_active_distance_state_is_solid);
+  RUN_TEST(test_shared_pixel_ties_keep_a_stable_colour);
   RUN_TEST(test_every_binding_is_in_bounds);
   RUN_TEST(test_every_physical_route_pixel_is_bound);
   RUN_TEST(test_l2_shared_trunk_reuses_l3_pixels);

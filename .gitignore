@@ -1,0 +1,12 @@
+.pio/
+.pytest_cache/
+__pycache__/
+*.py[cod]
+.env
+.venv/
+venv/
+tmp/
+output/
+server/data/*.zip
+server/data/*.pb
+server/data/gtfs/

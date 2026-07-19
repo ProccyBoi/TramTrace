@@ -1,0 +1,69 @@
+route,station,parent_stop_id,gpio,pixel_direction_0,led_direction_0,direction_0_destination,pixel_direction_1,led_direction_1,direction_1_destination,notes
+L1,Dulwich Hill,220310,16,0,LED94,Dulwich Hill,1,LED98,Central,
+L1,Dulwich Grove,220355,16,2,LED102,Dulwich Hill,3,LED106,Central,
+L1,Arlington,220322,16,4,LED110,Dulwich Hill,5,LED114,Central,
+L1,Waratah Mills,220320,16,6,LED118,Dulwich Hill,7,LED122,Central,
+L1,Lewisham West,204950,16,8,LED123,Dulwich Hill,9,LED119,Central,
+L1,Taverners Hill,204093,16,10,LED115,Dulwich Hill,11,LED111,Central,
+L1,Marion,204092,16,12,LED107,Dulwich Hill,13,LED103,Central,
+L1,Hawthorne,204091,16,14,LED99,Dulwich Hill,15,LED95,Central,
+L1,Leichhardt North,204090,16,16,LED71,Dulwich Hill,17,LED96,Central,
+L1,Lilyfield,204089,16,18,LED100,Dulwich Hill,19,LED104,Central,
+L1,Rozelle Bay,203817,16,20,LED108,Dulwich Hill,21,LED112,Central,
+L1,Jubilee Park,203756,16,22,LED116,Dulwich Hill,23,LED120,Central,
+L1,Glebe,203755,16,24,LED121,Dulwich Hill,25,LED117,Central,
+L1,Wentworth Park,200953,16,26,LED113,Dulwich Hill,27,LED109,Central,
+L1,Bank Street,200952,16,28,LED105,Dulwich Hill,29,LED101,Central,Formerly Fish Market
+L1,John Street Square,200948,16,30,LED97,Dulwich Hill,31,LED75,Central,
+L1,The Star,200947,16,32,LED126,Dulwich Hill,33,LED130,Central,
+L1,Pyrmont Bay,200946,16,34,LED134,Dulwich Hill,35,LED138,Central,
+L1,Convention,2000204,16,36,LED142,Dulwich Hill,37,LED146,Central,
+L1,Exhibition Centre,2000203,16,38,LED150,Dulwich Hill,39,LED154,Central,
+L1,Paddy's Markets,2000202,16,40,LED155,Dulwich Hill,41,LED151,Central,
+L1,Capitol Square,2000200,16,42,LED147,Dulwich Hill,43,LED143,Central,
+L1,Central,200060,16,44,LED139,Dulwich Hill,44,LED139,Central,One physical L1 pixel
+L2,Randwick,2031167,17,0,LED39,Randwick,1,LED68,Circular Quay,
+L2,UNSW High Street,2031156,17,2,LED72,Randwick,3,LED76,Circular Quay,
+L2,Wansey Road,2031157,17,4,LED80,Randwick,5,LED84,Circular Quay,
+L2,Royal Randwick,202158,17,6,LED88,Randwick,7,LED92,Circular Quay,
+L2,Moore Park,202195,18,10,LED57,Randwick,11,LED53,Circular Quay,Shared L3 physical chain
+L2,Surry Hills,201029,18,12,LED49,Randwick,13,LED45,Circular Quay,Shared L3 physical chain
+L2,Central,200060,18,14,LED41,Randwick,15,LED37,Circular Quay,Shared L3 physical chain
+L2,Haymarket,2000168,18,16,LED34,Randwick,17,LED38,Circular Quay,Shared L3 physical chain
+L2,Chinatown,2000169,18,18,LED42,Randwick,19,LED46,Circular Quay,Shared L3 physical chain
+L2,Town Hall,200070,18,20,LED50,Randwick,21,LED54,Circular Quay,Shared L3 physical chain
+L2,QVB,2000171,18,22,LED58,Randwick,23,LED62,Circular Quay,Shared L3 physical chain
+L2,Wynyard,200080,18,24,LED63,Randwick,25,LED59,Circular Quay,Shared L3 physical chain
+L2,Bridge Street,2000177,18,26,LED55,Randwick,27,LED51,Circular Quay,Shared L3 physical chain
+L2,Circular Quay,200020,18,28,LED47,Randwick,29,LED43,Circular Quay,Shared L3 physical chain
+L3,Juniors Kingsford,203294,18,0,LED36,Juniors Kingsford,1,LED40,Circular Quay,
+L3,Kingsford,203295,18,2,LED44,Juniors Kingsford,3,LED48,Circular Quay,
+L3,UNSW Anzac Parade,203360,18,4,LED52,Juniors Kingsford,5,LED56,Circular Quay,
+L3,Kensington,203361,18,6,LED60,Juniors Kingsford,7,LED64,Circular Quay,
+L3,ES Marks,203362,18,8,LED65,Juniors Kingsford,9,LED61,Circular Quay,
+L3,Moore Park,202195,18,10,LED57,Juniors Kingsford,11,LED53,Circular Quay,
+L3,Surry Hills,201029,18,12,LED49,Juniors Kingsford,13,LED45,Circular Quay,
+L3,Central,200060,18,14,LED41,Juniors Kingsford,15,LED37,Circular Quay,
+L3,Haymarket,2000168,18,16,LED34,Juniors Kingsford,17,LED38,Circular Quay,
+L3,Chinatown,2000169,18,18,LED42,Juniors Kingsford,19,LED46,Circular Quay,
+L3,Town Hall,200070,18,20,LED50,Juniors Kingsford,21,LED54,Circular Quay,
+L3,QVB,2000171,18,22,LED58,Juniors Kingsford,23,LED62,Circular Quay,
+L3,Wynyard,200080,18,24,LED63,Juniors Kingsford,25,LED59,Circular Quay,
+L3,Bridge Street,2000177,18,26,LED55,Juniors Kingsford,27,LED51,Circular Quay,
+L3,Circular Quay,200020,18,28,LED47,Juniors Kingsford,29,LED43,Circular Quay,
+L4,Carlingford,2118249,19,0,LED2,Westmead,1,LED3,Carlingford,
+L4,Telopea,211750,19,2,LED4,Westmead,3,LED5,Carlingford,
+L4,Dundas,211753,19,4,LED6,Westmead,5,LED7,Carlingford,
+L4,Yallamundi,211656,19,6,LED8,Westmead,7,LED9,Carlingford,
+L4,Rosehill Gardens,214214,19,8,LED10,Westmead,9,LED11,Carlingford,
+L4,Tramway Avenue,2150115,19,10,LED12,Westmead,11,LED13,Carlingford,
+L4,Robin Thomas,2150128,19,12,LED14,Westmead,13,LED15,Carlingford,
+L4,Parramatta Square,2150132,19,14,LED16,Westmead,15,LED17,Carlingford,
+L4,Church Street,2150135,19,16,LED18,Westmead,17,LED20,Carlingford,
+L4,Prince Alfred Square,2150149,19,18,LED22,Westmead,19,LED24,Carlingford,
+L4,Fennell Street,2150163,19,20,LED26,Westmead,21,LED28,Carlingford,
+L4,Benaud Oval,2151155,19,22,LED30,Westmead,23,LED32,Carlingford,
+L4,Ngara,2151158,19,24,LED33,Westmead,25,LED31,Carlingford,
+L4,Childrens Hospital,2145553,19,26,LED29,Westmead,27,LED27,Carlingford,
+L4,Westmead Hospital,2145584,19,28,LED25,Westmead,29,LED23,Carlingford,
+L4,Westmead,214510,19,30,LED21,Westmead,31,LED19,Carlingford,

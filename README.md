@@ -59,9 +59,15 @@ different port.
 ```powershell
 platformio test -e native
 platformio run -e tramtrace
-platformio run -e tramtrace -t upload
+powershell -NoProfile -ExecutionPolicy Bypass -File `
+  .\scripts\upload_firmware_only.ps1
 platformio device monitor -b 115200 -p COM9
 ```
+
+The routine uploader writes only the `app0` image at `0x10000`. It does not
+write or erase the NVS configuration partition at `0x9000..0xDFFF`. Use
+PlatformIO's full `-t upload` target only when intentionally changing the
+bootloader or partition table.
 
 On its first TramTrace boot the board runs a low-brightness, one-pixel chase,
 then opens an access point named `TramTrace-Setup-XXXXXX`. Join it and open
@@ -89,18 +95,29 @@ firmware never prints the password or board key back to serial.
 
 `simulate` runs two virtual trams in opposite directions on every route. Each
 stop progresses through in-range, approaching and stopped states using the
-current GTFS route colours: L1 `#BE1622`, L2 `#DD1E25`, L3 `#781140`, and L4
-`#BB2043`. Simulation brightness is capped at 16/255 for USB safety.
+current GTFS route identities. Simulation uses a fixed comparison brightness
+of 40/255. Only eight route pixels are active per frame, so this remains safe
+on USB while making the physical route colours easier to compare.
 `simulate-loop` saves and repeats that mode continuously, including after a
 power cycle; send `stop` over serial to clear the saved replay setting and
 return to normal setup/live operation.
 
 The route display is binary: every non-zero live state is continuously solid
-and state zero is off. Individual RGB channels are never dimmed, so every lit
-pixel uses the route's complete official RGB value. A shared L2/L3 trunk pixel
-uses the stronger state; an equal-state tie keeps one deterministic colour
-instead of blinking or blending. The default activation bands are 120 m,
-450 m, and 800 m.
+and state zero is off. The official browser sRGB values are retained separately
+from a quantisation-aware physical LED palette. On the assembled board that
+palette deliberately renders L1 as warm red, L2 as bright clean red, L3 as
+dark clean red, and L4 as rose-red. This exaggeration is necessary because the
+four closely related official reds otherwise collapse to the same integer PWM
+values at normal brightness. L3 remains blue-free because blue made it look
+pink through the physical optics. A shared L2/L3 trunk pixel uses the stronger
+state; an equal-state tie keeps one deterministic colour instead of blinking
+or blending. Firmware 0.2.5 temporarily doubles the requested route brightness
+(20 becomes 40, capped at 64) for an assembled-board visual test; the separate
+status LED remains at 12. Live frames no longer retain a missing pixel for an
+extra poll, preventing a moving vehicle from appearing at both its old and new
+stations. The live service also deduplicates TfNSW records by tracking-beacon
+and trip-instance identity before emitting station states. The default
+activation bands are 120 m, 450 m, and 800 m.
 
 ## Run the backend
 

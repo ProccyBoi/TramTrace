@@ -77,6 +77,13 @@ The backend returns PCB labels, including `Bank Street` for TfNSW's
 Central aliases. L2 and L3 remain separate in JSON even where their physical
 trunk LEDs are shared.
 
+Before station states are emitted, observations are grouped by their
+source-scoped TfNSW tracking-beacon ID and scheduled trip instance. When the
+same vehicle is present in multiple feed records, only the newest deterministic
+station candidate is retained. Distinct vehicles at the same station still
+combine normally, while records without a stable identity are left separate
+rather than guessed.
+
 `GET /healthz` reports token/static readiness plus per-feed and per-schedule
 availability, last-good age, and refresh errors. Responses use
 `Cache-Control: no-store`.

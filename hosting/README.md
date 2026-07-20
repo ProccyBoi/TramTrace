@@ -3,7 +3,9 @@
 This is the permanent Sites-hosted backend for the TramTrace ESP32 map. It
 fetches the three official Transport for NSW light-rail vehicle-position feeds,
 maps vehicles to the 68 route-stations on the PCB, and emits two directional
-states per station.
+states per station. Duplicate realtime rows are reconciled using TfNSW's
+source-scoped tracking-beacon and trip-instance identifiers so one vehicle can
+win only one station in each payload.
 
 ## Endpoints
 

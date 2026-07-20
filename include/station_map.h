@@ -30,12 +30,27 @@ constexpr uint16_t kStripLengths[] = {45, 8, 30, 32};
 constexpr uint8_t kStatusPin = 25;
 constexpr uint8_t kMaximumStripLength = 45;
 
-// Official TfNSW colours from the current static GTFS routes.txt.
-constexpr uint32_t kRouteColours[] = {
+// Official TfNSW sRGB colours from the current static GTFS routes.txt. These
+// values are suitable for a browser, but sRGB channel bytes are nonlinear and
+// must not be sent directly to a linear-PWM LED.
+constexpr uint32_t kRouteSrgbColours[] = {
     0xBE1622,  // L1
     0xDD1E25,  // L2
     0x781140,  // L3
     0xBB2043,  // L4
+};
+
+// Quantisation-aware WS2812C-2020-V1 drive values for the assembled board.
+// The four official browser colours are all closely related reds, and their
+// small secondary channels disappeared at the board's normal brightness.
+// This physical palette deliberately separates them as warm red, bright red,
+// dark red and rose-red. L3 remains blue-free because blue made it look pink
+// through the assembled LED optics.
+constexpr uint32_t kRouteLedColours[] = {
+    0xBE2000,  // L1: warm red
+    0xFF0000,  // L2: bright clean red
+    0x780000,  // L3: dark clean red
+    0xBB1030,  // L4: rose-red
 };
 
 // The array elements returned by the TramTrace API are canonicalised to the
@@ -131,10 +146,10 @@ constexpr uint8_t stripIndex(Strip strip) {
 }
 
 constexpr uint32_t routeColour(const char *route) {
-  return route[1] == '1'   ? kRouteColours[0]
-         : route[1] == '2' ? kRouteColours[1]
-         : route[1] == '3' ? kRouteColours[2]
-                           : kRouteColours[3];
+  return route[1] == '1'   ? kRouteLedColours[0]
+         : route[1] == '2' ? kRouteLedColours[1]
+         : route[1] == '3' ? kRouteLedColours[2]
+                           : kRouteLedColours[3];
 }
 
 static_assert(kStationBindingCount == 68,

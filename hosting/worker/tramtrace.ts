@@ -4,6 +4,10 @@ import {
   type FeedMessage,
   type VehiclePosition,
 } from "./gtfs-realtime";
+import {
+  deduplicateVehicleCandidates,
+  type VehicleCandidate,
+} from "./vehicle-dedupe";
 
 type Route = "L1" | "L2" | "L3" | "L4";
 type SourceName = "innerwest" | "cbdandsoutheast" | "parramatta";
@@ -669,6 +673,28 @@ function vehicleState(
   return 0;
 }
 
+function vehicleIdentityKeys(
+  source: SourceName,
+  vehicle: VehiclePosition,
+): string[] {
+  const keys: string[] = [];
+  if (vehicle.vehicleId) {
+    keys.push(`${source}:vehicle:${vehicle.vehicleId}`);
+  }
+  if (vehicle.trip?.tripId) {
+    const tripInstance = [
+      vehicle.trip.tripId,
+      vehicle.trip.startDate || "",
+      vehicle.trip.startTime || "",
+    ].join("|");
+    keys.push(`${source}:trip:${tripInstance}`);
+  }
+  if (vehicle.entityId) {
+    keys.push(`${source}:entity:${vehicle.entityId}`);
+  }
+  return keys;
+}
+
 function calculateStates(
   parts: FeedPart[],
   index: TransitIndex,
@@ -676,6 +702,7 @@ function calculateStates(
   now: number,
 ): StateMap {
   const states = emptyStates(index);
+  const candidates: VehicleCandidate<Route>[] = [];
 
   for (const part of parts) {
     for (const vehicle of part.message.vehicles) {
@@ -721,18 +748,35 @@ function calculateStates(
       }
 
       const state = vehicleState(vehicle, reported, distance, settings);
-      if (state <= 0) {
-        continue;
-      }
       const stationName = routeData.stations[stationIndex]?.[0];
       if (!stationName || !states[resolved.route][stationName]) {
         continue;
       }
-      states[resolved.route][stationName][resolved.direction] = Math.max(
-        states[resolved.route][stationName][resolved.direction],
+      candidates.push({
+        identityKeys: vehicleIdentityKeys(part.spec.name, vehicle),
+        route: resolved.route,
+        direction: resolved.direction,
+        stationIndex,
+        stationName,
+        reported,
+        distance,
         state,
-      );
+        timestamp: vehicle.timestamp,
+        currentStopSequence: vehicle.currentStopSequence,
+        entityId: vehicle.entityId,
+      });
     }
+  }
+
+  for (const candidate of deduplicateVehicleCandidates(candidates)) {
+    if (candidate.state <= 0) {
+      continue;
+    }
+    states[candidate.route][candidate.stationName][candidate.direction] =
+      Math.max(
+        states[candidate.route][candidate.stationName][candidate.direction],
+        candidate.state,
+      );
   }
 
   return states;

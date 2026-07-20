@@ -48,6 +48,10 @@ class VehicleObservation:
     longitude: float | None
     timestamp: float | None
     source: str = "synthetic"
+    vehicle_id: str | None = None
+    entity_id: str | None = None
+    trip_start_date: str | None = None
+    trip_start_time: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -56,6 +60,16 @@ class StateResult:
     accepted_vehicles: int
     stale_vehicles: int
     unresolved_vehicles: int
+
+
+@dataclass(frozen=True, slots=True)
+class _VehicleCandidate:
+    observation: VehicleObservation
+    station: str
+    reported: bool
+    distance: float | None
+    state: int
+    identity_keys: tuple[str, ...]
 
 
 def _has_field(message: object, field: str) -> bool:
@@ -131,6 +145,16 @@ def observations_from_part(part: FeedPart, static: StaticGTFS) -> Iterable[Vehic
             if trip_descriptor is not None
             else None
         )
+        trip_start_date = (
+            str(getattr(trip_descriptor, "start_date", "") or "") or None
+            if trip_descriptor is not None
+            else None
+        )
+        trip_start_time = (
+            str(getattr(trip_descriptor, "start_time", "") or "") or None
+            if trip_descriptor is not None
+            else None
+        )
         route_id = (
             str(getattr(trip_descriptor, "route_id", "") or "") or None
             if trip_descriptor is not None
@@ -176,6 +200,14 @@ def observations_from_part(part: FeedPart, static: StaticGTFS) -> Iterable[Vehic
         current_sequence = _as_optional_int(vehicle, "current_stop_sequence")
         current_status = int(getattr(vehicle, "current_status", IN_TRANSIT_TO))
         vehicle_timestamp = _as_optional_int(vehicle, "timestamp")
+        vehicle_descriptor = (
+            vehicle.vehicle if _has_field(vehicle, "vehicle") else None
+        )
+        vehicle_id = (
+            str(getattr(vehicle_descriptor, "id", "") or "") or None
+            if vehicle_descriptor is not None
+            else None
+        )
         yield VehicleObservation(
             route=route,
             direction=direction,
@@ -187,6 +219,10 @@ def observations_from_part(part: FeedPart, static: StaticGTFS) -> Iterable[Vehic
             longitude=longitude,
             timestamp=float(vehicle_timestamp) if vehicle_timestamp is not None else None,
             source=part.spec.name,
+            vehicle_id=vehicle_id,
+            entity_id=str(getattr(entity, "id", "") or "") or None,
+            trip_start_date=trip_start_date,
+            trip_start_time=trip_start_time,
         )
 
 
@@ -324,6 +360,117 @@ class DirectionalStateEngine:
             return 2 if observation.current_status == INCOMING_AT else 1
         return 0
 
+    @staticmethod
+    def _identity_keys(observation: VehicleObservation) -> tuple[str, ...]:
+        prefix = observation.source
+        keys: list[str] = []
+        if observation.vehicle_id:
+            keys.append(f"{prefix}:vehicle:{observation.vehicle_id}")
+        if observation.trip_id:
+            trip_instance = "|".join(
+                (
+                    observation.trip_id,
+                    observation.trip_start_date or "",
+                    observation.trip_start_time or "",
+                )
+            )
+            keys.append(f"{prefix}:trip:{trip_instance}")
+        if observation.entity_id:
+            keys.append(f"{prefix}:entity:{observation.entity_id}")
+        return tuple(keys)
+
+    @staticmethod
+    def _candidate_is_better(
+        candidate: _VehicleCandidate,
+        existing: _VehicleCandidate,
+    ) -> bool:
+        candidate_timestamp = (
+            candidate.observation.timestamp
+            if candidate.observation.timestamp is not None
+            else float("-inf")
+        )
+        existing_timestamp = (
+            existing.observation.timestamp
+            if existing.observation.timestamp is not None
+            else float("-inf")
+        )
+        if candidate_timestamp != existing_timestamp:
+            return candidate_timestamp > existing_timestamp
+
+        candidate_sequence = (
+            candidate.observation.current_stop_sequence
+            if candidate.observation.current_stop_sequence is not None
+            else -1
+        )
+        existing_sequence = (
+            existing.observation.current_stop_sequence
+            if existing.observation.current_stop_sequence is not None
+            else -1
+        )
+        if candidate_sequence != existing_sequence:
+            return candidate_sequence > existing_sequence
+
+        candidate_has_distance = candidate.distance is not None
+        existing_has_distance = existing.distance is not None
+        if candidate_has_distance != existing_has_distance:
+            return candidate_has_distance
+        if (
+            candidate.distance is not None
+            and existing.distance is not None
+            and candidate.distance != existing.distance
+        ):
+            return candidate.distance < existing.distance
+        if candidate.reported != existing.reported:
+            return candidate.reported
+
+        candidate_tie = (
+            candidate.observation.entity_id or "",
+            candidate.observation.route,
+            candidate.observation.direction,
+            candidate.station,
+        )
+        existing_tie = (
+            existing.observation.entity_id or "",
+            existing.observation.route,
+            existing.observation.direction,
+            existing.station,
+        )
+        return candidate_tie < existing_tie
+
+    def _deduplicate_candidates(
+        self, candidates: list[_VehicleCandidate]
+    ) -> list[_VehicleCandidate]:
+        if len(candidates) < 2:
+            return candidates
+
+        parents = list(range(len(candidates)))
+
+        def find(index: int) -> int:
+            while parents[index] != index:
+                parents[index] = parents[parents[index]]
+                index = parents[index]
+            return index
+
+        def union(left: int, right: int) -> None:
+            left_root = find(left)
+            right_root = find(right)
+            if left_root != right_root:
+                parents[right_root] = left_root
+
+        identity_owner: dict[str, int] = {}
+        for index, candidate in enumerate(candidates):
+            for key in candidate.identity_keys:
+                owner = identity_owner.setdefault(key, index)
+                union(index, owner)
+
+        winners: dict[int, _VehicleCandidate] = {}
+        for index, candidate in enumerate(candidates):
+            root = find(index)
+            existing = winners.get(root)
+            if existing is None or self._candidate_is_better(candidate, existing):
+                winners[root] = candidate
+        return list(winners.values())
+
     def calculate(
         self,
         observations: Iterable[VehicleObservation],
@@ -334,6 +481,7 @@ class DirectionalStateEngine:
         accepted = 0
         stale = 0
         unresolved = 0
+        candidates: list[_VehicleCandidate] = []
 
         for observation in observations:
             if observation.route not in PCB_ROUTE_ORDERS or observation.direction not in (
@@ -368,11 +516,24 @@ class DirectionalStateEngine:
                 reported_station=reported,
                 distance=distance,
             )
-            if state <= 0:
+            candidates.append(
+                _VehicleCandidate(
+                    observation=observation,
+                    station=station,
+                    reported=reported,
+                    distance=distance,
+                    state=state,
+                    identity_keys=self._identity_keys(observation),
+                )
+            )
+
+        for candidate in self._deduplicate_candidates(candidates):
+            observation = candidate.observation
+            if candidate.state <= 0:
                 continue
-            states[observation.route][station][observation.direction] = max(
-                states[observation.route][station][observation.direction],
-                state,
+            states[observation.route][candidate.station][observation.direction] = max(
+                states[observation.route][candidate.station][observation.direction],
+                candidate.state,
             )
             accepted += 1
 

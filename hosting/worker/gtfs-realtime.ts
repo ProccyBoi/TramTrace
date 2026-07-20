@@ -9,11 +9,15 @@
 
 export interface TripDescriptor {
   tripId?: string;
+  startTime?: string;
+  startDate?: string;
   routeId?: string;
   directionId?: number;
 }
 
 export interface VehiclePosition {
+  entityId?: string;
+  vehicleId?: string;
   trip?: TripDescriptor;
   stopId?: string;
   currentStopSequence?: number;
@@ -155,6 +159,10 @@ function decodeTrip(bytes: Uint8Array): TripDescriptor {
     const { field, wire } = reader.tag();
     if (field === 1 && wire === 2) {
       trip.tripId = reader.string() || undefined;
+    } else if (field === 2 && wire === 2) {
+      trip.startTime = reader.string() || undefined;
+    } else if (field === 3 && wire === 2) {
+      trip.startDate = reader.string() || undefined;
     } else if (field === 5 && wire === 2) {
       trip.routeId = reader.string() || undefined;
     } else if (field === 6 && wire === 0) {
@@ -188,6 +196,22 @@ function decodePosition(
   return { latitude, longitude };
 }
 
+function decodeVehicleDescriptor(bytes: Uint8Array): string | undefined {
+  const reader = new ProtobufReader(bytes);
+  let vehicleId: string | undefined;
+
+  while (!reader.done) {
+    const { field, wire } = reader.tag();
+    if (field === 1 && wire === 2) {
+      vehicleId = reader.string() || undefined;
+    } else {
+      reader.skip(wire);
+    }
+  }
+
+  return vehicleId;
+}
+
 function decodeVehicle(bytes: Uint8Array): VehiclePosition {
   const reader = new ProtobufReader(bytes);
   const vehicle: VehiclePosition = {
@@ -209,6 +233,8 @@ function decodeVehicle(bytes: Uint8Array): VehiclePosition {
       vehicle.timestamp = reader.uint64();
     } else if (field === 7 && wire === 2) {
       vehicle.stopId = reader.string() || undefined;
+    } else if (field === 8 && wire === 2) {
+      vehicle.vehicleId = decodeVehicleDescriptor(reader.bytesField());
     } else {
       reader.skip(wire);
     }
@@ -219,17 +245,23 @@ function decodeVehicle(bytes: Uint8Array): VehiclePosition {
 
 function decodeEntity(bytes: Uint8Array): VehiclePosition | undefined {
   const reader = new ProtobufReader(bytes);
+  let entityId: string | undefined;
   let vehicle: VehiclePosition | undefined;
 
   while (!reader.done) {
     const { field, wire } = reader.tag();
-    if (field === 4 && wire === 2) {
+    if (field === 1 && wire === 2) {
+      entityId = reader.string() || undefined;
+    } else if (field === 4 && wire === 2) {
       vehicle = decodeVehicle(reader.bytesField());
     } else {
       reader.skip(wire);
     }
   }
 
+  if (vehicle) {
+    vehicle.entityId = entityId;
+  }
   return vehicle;
 }
 

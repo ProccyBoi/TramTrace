@@ -21,8 +21,9 @@ The PCB establishes which physical light sits beside each printed station.
 | L4 | 19 | `L4 - HS` | 32 | LED2 |
 
 U3 is an ESP32-WROOM-32E. U5 is an MC14504BDR2G translating the four route
-signals and status signal from 3.3 V to 5 V. Every route light is a
-WS2812C-2020-V1/W with pad 3 as DI and pad 1 as DO.
+signals and status signal from 3.3 V to 5 V. The assembled route pixels are
+Worldsemi WS2812C-2020-V1. They use pad 3 as DI, pad 1 as DO, and GRB data at
+800 kbit/s.
 
 The exact data-chain orders are:
 
@@ -77,6 +78,8 @@ station, lights slot 0, then lights slot 1.
 ## Power
 
 There are 116 addressable LEDs including status. Do not run an all-white,
-full-brightness test from a normal computer USB port. The firmware caps remote
-brightness at 64/255 and its hardware test lights only one route pixel at a
-time.
+full-brightness test from a normal computer USB port. The assembled C-2020-V1
+pixels are rated at 5 mA per channel, so a theoretical all-white frame is about
+1.74 A before allowing for the controller and board losses. The firmware caps
+remote brightness at 64/255 and its hardware test lights only one route pixel
+at a time.

@@ -220,10 +220,14 @@ def make_feed_part(
     message.header.timestamp = header_timestamp
     for index, values in enumerate(vehicles):
         entity = message.entity.add()
-        entity.id = str(index)
+        entity.id = str(values.get("entity_id", index))
         vehicle = entity.vehicle
         if trip_id := values.get("trip_id"):
             vehicle.trip.trip_id = str(trip_id)
+        if trip_start_date := values.get("trip_start_date"):
+            vehicle.trip.start_date = str(trip_start_date)
+        if trip_start_time := values.get("trip_start_time"):
+            vehicle.trip.start_time = str(trip_start_time)
         if route_id := values.get("route_id"):
             vehicle.trip.route_id = str(route_id)
         if "direction_id" in values:
@@ -239,6 +243,8 @@ def make_feed_part(
             vehicle.position.longitude = float(values["longitude"])
         if "timestamp" in values:
             vehicle.timestamp = int(values["timestamp"])
+        if vehicle_id := values.get("vehicle_id"):
+            vehicle.vehicle.id = str(vehicle_id)
     return FeedPart(
         spec=FeedSpec(
             name=name,

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from server.gtfs import StaticGTFS
 from server.realtime import FeedSnapshot
 from server.service import Settings
@@ -178,6 +180,202 @@ def test_validated_realtime_direction_precedes_static_trip_direction(
     )
     assert len(observations) == 1
     assert observations[0].direction == 1
+
+
+@pytest.mark.parametrize("reverse_order", [False, True])
+def test_same_vehicle_only_lights_its_newest_station(
+    static_gtfs: StaticGTFS,
+    feed_part_factory,
+    reverse_order: bool,
+) -> None:
+    now = 30_000
+    vehicles = [
+        {
+            "entity_id": "older-record",
+            "vehicle_id": "tracking-beacon-118466",
+            "trip_id": "l1-1",
+            "route_id": "route-L1",
+            "direction_id": 1,
+            "stop_id": "l1-central",
+            "current_stop_sequence": 3,
+            "current_status": STOPPED_AT,
+            "timestamp": now - 1,
+        },
+        {
+            "entity_id": "newer-record",
+            "vehicle_id": "tracking-beacon-118466",
+            "trip_id": "l1-0",
+            "route_id": "route-L1",
+            "direction_id": 0,
+            "stop_id": "l1-bank",
+            "current_stop_sequence": 2,
+            "current_status": STOPPED_AT,
+            "timestamp": now,
+        },
+    ]
+    if reverse_order:
+        vehicles.reverse()
+    part = feed_part_factory(
+        name="innerwest",
+        routes={"L1"},
+        header_timestamp=now,
+        vehicles=vehicles,
+    )
+    observations = observations_from_snapshot(
+        FeedSnapshot(parts=(part,), attempted_at=now, errors={}),
+        static_gtfs,
+        now=now,
+        max_feed_age_seconds=120,
+        future_tolerance_seconds=30,
+    )
+
+    result = DirectionalStateEngine(static_gtfs).calculate(observations, now=now)
+
+    assert result.states["L1"]["Central"] == [0, 0]
+    assert result.states["L1"]["Bank Street"] == [3, 0]
+    assert result.accepted_vehicles == 1
+
+
+def test_trip_instance_deduplicates_when_vehicle_id_is_missing(
+    static_gtfs: StaticGTFS,
+    feed_part_factory,
+) -> None:
+    now = 31_000
+    part = feed_part_factory(
+        name="innerwest",
+        routes={"L1"},
+        header_timestamp=now,
+        vehicles=[
+            {
+                "entity_id": "old-trip-record",
+                "trip_id": "l1-1",
+                "trip_start_date": "20260720",
+                "trip_start_time": "12:00:00",
+                "route_id": "route-L1",
+                "direction_id": 1,
+                "stop_id": "l1-dulwich",
+                "current_stop_sequence": 1,
+                "current_status": STOPPED_AT,
+                "timestamp": now - 1,
+            },
+            {
+                "entity_id": "new-trip-record",
+                "trip_id": "l1-1",
+                "trip_start_date": "20260720",
+                "trip_start_time": "12:00:00",
+                "route_id": "route-L1",
+                "direction_id": 1,
+                "stop_id": "l1-bank",
+                "current_stop_sequence": 2,
+                "current_status": STOPPED_AT,
+                "timestamp": now,
+            },
+        ],
+    )
+    observations = observations_from_snapshot(
+        FeedSnapshot(parts=(part,), attempted_at=now, errors={}),
+        static_gtfs,
+        now=now,
+        max_feed_age_seconds=120,
+        future_tolerance_seconds=30,
+    )
+
+    result = DirectionalStateEngine(static_gtfs).calculate(observations, now=now)
+
+    assert result.states["L1"]["Dulwich Hill"] == [0, 0]
+    assert result.states["L1"]["Bank Street"] == [0, 3]
+    assert result.accepted_vehicles == 1
+
+
+def test_different_vehicles_remain_visible(
+    static_gtfs: StaticGTFS,
+    feed_part_factory,
+) -> None:
+    now = 32_000
+    part = feed_part_factory(
+        name="innerwest",
+        routes={"L1"},
+        header_timestamp=now,
+        vehicles=[
+            {
+                "vehicle_id": "beacon-a",
+                "trip_id": "l1-0",
+                "route_id": "route-L1",
+                "direction_id": 0,
+                "stop_id": "l1-central",
+                "current_stop_sequence": 1,
+                "current_status": STOPPED_AT,
+                "timestamp": now,
+            },
+            {
+                "vehicle_id": "beacon-b",
+                "trip_id": "l1-1",
+                "route_id": "route-L1",
+                "direction_id": 1,
+                "stop_id": "l1-bank",
+                "current_stop_sequence": 2,
+                "current_status": STOPPED_AT,
+                "timestamp": now,
+            },
+        ],
+    )
+    observations = observations_from_snapshot(
+        FeedSnapshot(parts=(part,), attempted_at=now, errors={}),
+        static_gtfs,
+        now=now,
+        max_feed_age_seconds=120,
+        future_tolerance_seconds=30,
+    )
+
+    result = DirectionalStateEngine(static_gtfs).calculate(observations, now=now)
+
+    assert result.states["L1"]["Central"] == [3, 0]
+    assert result.states["L1"]["Bank Street"] == [0, 3]
+    assert result.accepted_vehicles == 2
+
+
+def test_newest_inactive_record_suppresses_older_vehicle_ghost(
+    static_gtfs: StaticGTFS,
+) -> None:
+    now = 33_000
+    engine = DirectionalStateEngine(static_gtfs)
+    result = engine.calculate(
+        [
+            VehicleObservation(
+                route="L1",
+                direction=0,
+                trip_id="l1-0",
+                stop_id="l1-central",
+                current_stop_sequence=1,
+                current_status=STOPPED_AT,
+                latitude=None,
+                longitude=None,
+                timestamp=now - 1,
+                source="innerwest",
+                vehicle_id="tracking-beacon-ghost-test",
+                entity_id="old-active",
+            ),
+            VehicleObservation(
+                route="L1",
+                direction=0,
+                trip_id="l1-0",
+                stop_id="l1-bank",
+                current_stop_sequence=2,
+                current_status=2,
+                latitude=0.0,
+                longitude=0.0,
+                timestamp=now,
+                source="innerwest",
+                vehicle_id="tracking-beacon-ghost-test",
+                entity_id="new-inactive",
+            ),
+        ],
+        now=now,
+    )
+
+    assert result.states["L1"]["Central"] == [0, 0]
+    assert result.states["L1"]["Bank Street"] == [0, 0]
+    assert result.accepted_vehicles == 0
 
 
 def test_stale_vehicle_and_stale_feed_are_guarded(

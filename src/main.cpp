@@ -35,11 +35,12 @@ namespace {
 
 using tramtrace::Strip;
 
-constexpr char kFirmwareVersion[] = "0.2.1";
+constexpr char kFirmwareVersion[] = "0.2.5";
 constexpr uint8_t kDefaultBrightness = 20;
 constexpr uint8_t kMaximumBrightness = 64;
 constexpr uint8_t kStatusBrightness = 12;
-constexpr uint8_t kGracePayloads = 1;
+constexpr uint8_t kSimulationBrightness = 40;
+constexpr uint8_t kBrightnessTestMultiplier = 2;
 constexpr uint32_t kDefaultPollMs = 3000;
 constexpr uint32_t kMinimumPollMs = 1000;
 constexpr uint32_t kMaximumPollMs = 10000;
@@ -66,7 +67,6 @@ struct DeviceConfig {
 
 struct PixelValue {
   uint8_t state = 0;
-  uint8_t grace = 0;
   uint32_t colour = 0;
 };
 
@@ -107,7 +107,7 @@ Adafruit_NeoPixel gStatusStrip(1, tramtrace::kStatusPin,
 PixelValue gPixels[4][tramtrace::kMaximumStripLength] = {};
 CandidatePixel gCandidate[4][tramtrace::kMaximumStripLength] = {};
 
-uint8_t gBrightness = kDefaultBrightness;
+uint8_t gBrightness = kDefaultBrightness * kBrightnessTestMultiplier;
 uint32_t gPollMs = kDefaultPollMs;
 uint32_t gLastPollAttemptMs = 0;
 uint32_t gLastGoodPayloadMs = 0;
@@ -125,6 +125,11 @@ void processSerial();
 uint8_t clampBrightness(int value) {
   return static_cast<uint8_t>(
       std::max(1, std::min<int>(value, kMaximumBrightness)));
+}
+
+uint8_t testRouteBrightness(int requestedBrightness) {
+  const int requested = clampBrightness(requestedBrightness);
+  return clampBrightness(requested * kBrightnessTestMultiplier);
 }
 
 uint8_t clampState(int value) {
@@ -222,7 +227,7 @@ void runSafePixelChase(bool rememberResult) {
        stripIndex < tramtrace::stripIndex(Strip::Count); ++stripIndex) {
     auto &strip = gStrips[stripIndex];
     strip.setBrightness(8);
-    const uint32_t colour = tramtrace::kRouteColours[stripIndex];
+    const uint32_t colour = tramtrace::kRouteLedColours[stripIndex];
 
     for (uint16_t pixel = 0;
          pixel < tramtrace::kStripLengths[stripIndex]; ++pixel) {
@@ -302,7 +307,7 @@ bool loadConfig() {
   gConfig.ssid.trim();
   gConfig.apiUrl.trim();
   gConfig.boardId.trim();
-  gBrightness = gConfig.brightness;
+  gBrightness = testRouteBrightness(gConfig.brightness);
   return gConfig.isValid();
 }
 
@@ -364,7 +369,10 @@ String configPageHtml() {
 }
 
 [[noreturn]] void startConfigPortal() {
-  WiFi.disconnect(true, true);
+  // Stop station mode without asking the ESP32 Wi-Fi stack to erase its saved
+  // AP record. TramTrace's own configuration remains in its Preferences
+  // namespace until an explicit factory-reset command.
+  WiFi.disconnect(true, false);
   delay(100);
   WiFi.mode(WIFI_AP);
 
@@ -555,9 +563,6 @@ void applyCandidateFrame() {
       if (candidate.state > 0) {
         current.state = candidate.state;
         current.colour = candidate.colour;
-        current.grace = kGracePayloads;
-      } else if (current.grace > 0) {
-        --current.grace;
       } else {
         current.state = 0;
         current.colour = 0;
@@ -664,9 +669,9 @@ bool fetchPayload() {
   }
 
   if (document["brightness"].is<int>()) {
-    gBrightness = clampBrightness(document["brightness"].as<int>());
+    gBrightness = testRouteBrightness(document["brightness"].as<int>());
   } else {
-    gBrightness = gConfig.brightness;
+    gBrightness = testRouteBrightness(gConfig.brightness);
   }
 
   if (document["poll_seconds"].is<float>() ||
@@ -751,7 +756,6 @@ void placeSimulationTram(const tramtrace::StationBinding &binding,
     value.state = state;
     value.colour = colour;
   }
-  value.grace = 0;
   gFrameIsClear = false;
 }
 
@@ -787,6 +791,9 @@ void runLiveSimulation(bool repeat) {
   Serial.println(
       "[SIM] GTFS colours: L1=#BE1622 L2=#DD1E25 "
       "L3=#781140 L4=#BB2043");
+  Serial.printf(
+      "[SIM] Board-calibrated route palette at brightness %u/255.\n",
+      kSimulationBrightness);
   Serial.println(
       "[SIM] State sequence at each stop: in-range, approaching, stopped.");
   if (repeat) {
@@ -796,7 +803,10 @@ void runLiveSimulation(bool repeat) {
   setStatus(StatusCode::Testing);
 
   const uint8_t savedBrightness = gBrightness;
-  gBrightness = std::min<uint8_t>(savedBrightness, 16);
+  // Only eight route pixels are active in a simulation frame, so this fixed
+  // comparison brightness remains USB-safe while keeping the four physical
+  // route colours above the WS2812 integer-quantisation floor.
+  gBrightness = kSimulationBrightness;
   clearLiveFrame();
   renderFrame(true);
 
@@ -1094,7 +1104,7 @@ void setup() {
     startConfigPortal();
   }
 
-  gBrightness = gConfig.brightness;
+  gBrightness = testRouteBrightness(gConfig.brightness);
   for (auto &strip : gStrips) {
     strip.setBrightness(gBrightness);
   }

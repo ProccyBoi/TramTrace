@@ -5,7 +5,7 @@ from __future__ import annotations
 import threading
 import time
 from dataclasses import dataclass
-from typing import Mapping, Sequence
+from typing import Callable, Mapping, Sequence
 
 import requests
 from google.transit import gtfs_realtime_pb2
@@ -81,25 +81,41 @@ class FeedSnapshot:
 class TfNSWRealtimeClient:
     """Fetch the three official light-rail feeds without discarding last-good data."""
 
+    _MIN_FAILURE_BACKOFF_SECONDS = 1.0
+
     def __init__(
         self,
         *,
         token: str | None,
         feeds: Sequence[FeedSpec] = DEFAULT_FEEDS,
         session: requests.Session | None = None,
-        cache_seconds: float = 3.0,
+        cache_seconds: float = 15.0,
+        failure_backoff_max_seconds: float = 300.0,
         timeout_seconds: float = 12.0,
         max_response_bytes: int = 20 * 1024 * 1024,
+        clock: Callable[[], float] | None = None,
     ):
         self.token = (token or "").strip()
         self.feeds = tuple(feeds)
         self.session = session or requests.Session()
         self.cache_seconds = max(0.0, float(cache_seconds))
+        failure_backoff_base = max(
+            self._MIN_FAILURE_BACKOFF_SECONDS,
+            self.cache_seconds,
+        )
+        self.failure_backoff_max_seconds = max(
+            failure_backoff_base,
+            float(failure_backoff_max_seconds),
+        )
         self.timeout_seconds = max(0.1, float(timeout_seconds))
         self.max_response_bytes = max(1024, int(max_response_bytes))
+        self._clock = clock or time.time
         self._parts: dict[str, FeedPart] = {}
         self._errors: dict[str, str] = {}
+        self._has_attempted = False
         self._last_attempt = 0.0
+        self._next_attempt_at = 0.0
+        self._consecutive_total_failures = 0
         self._lock = threading.Lock()
 
     @staticmethod
@@ -145,53 +161,104 @@ class TfNSWRealtimeClient:
         finally:
             response.close()
 
+    def _snapshot_locked(self) -> FeedSnapshot:
+        return FeedSnapshot(
+            parts=tuple(self._parts.values()),
+            attempted_at=self._last_attempt,
+            errors=dict(self._errors),
+        )
+
+    def _raise_unavailable_locked(self) -> None:
+        detail = ", ".join(
+            f"{name}={error}" for name, error in sorted(self._errors.items())
+        )
+        raise RealtimeFeedError(
+            f"No TfNSW light-rail feed is available{': ' + detail if detail else ''}"
+        )
+
+    def _record_attempt_locked(
+        self,
+        *,
+        timestamp: float,
+        errors: Mapping[str, str],
+        successful_fetches: int,
+    ) -> None:
+        self._has_attempted = True
+        self._errors = dict(errors)
+        self._last_attempt = timestamp
+        if successful_fetches:
+            self._consecutive_total_failures = 0
+            self._next_attempt_at = timestamp + self.cache_seconds
+            return
+
+        self._consecutive_total_failures += 1
+        backoff_base = max(
+            self._MIN_FAILURE_BACKOFF_SECONDS,
+            self.cache_seconds,
+        )
+        # Cap the exponent as well as the resulting delay so a prolonged
+        # outage cannot create unnecessarily large intermediate integers.
+        exponent = min(self._consecutive_total_failures - 1, 30)
+        delay = min(
+            self.failure_backoff_max_seconds,
+            backoff_base * (2**exponent),
+        )
+        self._next_attempt_at = timestamp + delay
+
     def snapshot(self, *, now: float | None = None, force: bool = False) -> FeedSnapshot:
         if not self.token:
             raise MissingTokenError(
                 "TFNSW_API_TOKEN is required for TfNSW light-rail realtime data"
             )
 
-        timestamp = time.time() if now is None else float(now)
+        use_completion_clock = now is None
+        timestamp = self._clock() if use_completion_clock else float(now)
         with self._lock:
             if (
                 not force
-                and self._parts
-                and timestamp - self._last_attempt < self.cache_seconds
+                and self._has_attempted
+                and timestamp < self._next_attempt_at
             ):
-                return FeedSnapshot(
-                    parts=tuple(self._parts.values()),
-                    attempted_at=self._last_attempt,
-                    errors=dict(self._errors),
-                )
+                if not self._parts:
+                    self._raise_unavailable_locked()
+                return self._snapshot_locked()
 
             errors: dict[str, str] = {}
+            successful_fetches = 0
+            successful_names: list[str] = []
             for spec in self.feeds:
                 try:
                     self._parts[spec.name] = self._fetch_one(spec, timestamp)
+                    successful_fetches += 1
+                    successful_names.append(spec.name)
                 except Exception as exc:
                     errors[spec.name] = self._safe_error(exc)
-            self._errors = errors
-            self._last_attempt = timestamp
+            completed_at = (
+                max(timestamp, self._clock())
+                if use_completion_clock
+                else timestamp
+            )
+            if use_completion_clock:
+                for name in successful_names:
+                    part = self._parts[name]
+                    self._parts[name] = FeedPart(
+                        spec=part.spec,
+                        message=part.message,
+                        received_at=completed_at,
+                        header_timestamp=part.header_timestamp,
+                    )
+            self._record_attempt_locked(
+                timestamp=completed_at,
+                errors=errors,
+                successful_fetches=successful_fetches,
+            )
 
             if not self._parts:
-                detail = ", ".join(
-                    f"{name}={error}" for name, error in sorted(errors.items())
-                )
-                raise RealtimeFeedError(
-                    f"No TfNSW light-rail feed is available{': ' + detail if detail else ''}"
-                )
-            return FeedSnapshot(
-                parts=tuple(self._parts.values()),
-                attempted_at=timestamp,
-                errors=dict(errors),
-            )
+                self._raise_unavailable_locked()
+            return self._snapshot_locked()
 
     def cached_snapshot(self) -> FeedSnapshot | None:
         with self._lock:
-            if not self._parts:
+            if not self._has_attempted:
                 return None
-            return FeedSnapshot(
-                parts=tuple(self._parts.values()),
-                attempted_at=self._last_attempt,
-                errors=dict(self._errors),
-            )
+            return self._snapshot_locked()

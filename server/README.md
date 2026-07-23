@@ -96,7 +96,11 @@ availability, last-good age, and refresh errors. Responses use
 
 Each feed has an independent last-good cache. A transient failure therefore
 does not blank unrelated routes; cached data naturally turns off once it fails
-the configured feed/vehicle stale guards.
+the configured feed/vehicle stale guards. Empty and total-failure responses are
+also cached, so concurrent callers cannot bypass the upstream interval. Repeated
+total failures use bounded exponential backoff and any successful feed resets
+that backoff. Refresh intervals and backoff are measured from completion of the
+upstream attempt, so slow TfNSW responses do not consume their own cooldown.
 
 ## Operator schedule defaults
 
@@ -115,7 +119,7 @@ later fetch fails.
 | `TRAMTRACE_GTFS_SOURCE` | none | Optional base GTFS directory, ZIP, or URL |
 | `TRAMTRACE_BRIGHTNESS` | `24` | Payload brightness, clamped to `0..64` |
 | `TRAMTRACE_POLL_SECONDS` | `3` | ESP32 polling interval |
-| `TRAMTRACE_FEED_CACHE_SECONDS` | `3` | Minimum live-feed refetch interval |
+| `TRAMTRACE_FEED_CACHE_SECONDS` | `15` | Minimum live-feed refetch interval, clamped to at least 15 seconds |
 | `TRAMTRACE_STATIC_REFRESH_SECONDS` | `21600` | Optional base-GTFS refresh interval |
 | `TRAMTRACE_SCHEDULE_REFRESH_SECONDS` | `21600` | Per-operator schedule refresh interval |
 | `TRAMTRACE_SCHEDULE_RETRY_SECONDS` | `60` | Failed schedule retry interval |

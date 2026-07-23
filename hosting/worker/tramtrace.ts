@@ -8,6 +8,10 @@ import {
   deduplicateVehicleCandidates,
   type VehicleCandidate,
 } from "./vehicle-dedupe";
+import {
+  FeedRefreshCache,
+  type FeedRefreshBatch,
+} from "./feed-refresh-cache";
 
 type Route = "L1" | "L2" | "L3" | "L4";
 type SourceName = "innerwest" | "cbdandsoutheast" | "parramatta";
@@ -77,6 +81,8 @@ interface FeedPart {
 interface FeedSnapshot {
   parts: FeedPart[];
   attemptedAt: number;
+  nextAttemptAt: number;
+  consecutiveAllFailures: number;
   errors: Partial<Record<SourceName, string>>;
 }
 
@@ -288,8 +294,8 @@ function runtimeSettings(env: WorkerEnv): RuntimeSettings {
     ),
     cacheSeconds: numberSetting(
       env.TRAMTRACE_FEED_CACHE_SECONDS,
-      3,
-      0,
+      15,
+      15,
       60,
     ),
     maxVehicleAgeSeconds: numberSetting(
@@ -342,11 +348,8 @@ function feedSpecs(env: WorkerEnv): FeedSpec[] {
   ];
 }
 
-const feedParts = new Map<SourceName, FeedPart>();
-let feedErrors: Partial<Record<SourceName, string>> = {};
-let lastAttempt = 0;
+const feedCache = new FeedRefreshCache<SourceName, FeedPart>();
 let activeConfiguration = "";
-let refreshInFlight: Promise<FeedSnapshot> | null = null;
 
 function safeFetchError(error: unknown): string {
   if (error instanceof Error) {
@@ -368,7 +371,6 @@ function safeFetchError(error: unknown): string {
 async function fetchOne(
   spec: FeedSpec,
   token: string,
-  now: number,
 ): Promise<FeedPart> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
@@ -397,7 +399,7 @@ async function fetchOne(
     return {
       spec,
       message,
-      receivedAt: now,
+      receivedAt: Date.now() / 1000,
       headerTimestamp: message.headerTimestamp || 0,
     };
   } finally {
@@ -408,32 +410,23 @@ async function fetchOne(
 async function refreshFeeds(
   token: string,
   specs: FeedSpec[],
-  now: number,
-): Promise<FeedSnapshot> {
+): Promise<FeedRefreshBatch<SourceName, FeedPart>> {
   const results = await Promise.allSettled(
-    specs.map((spec) => fetchOne(spec, token, now)),
+    specs.map((spec) => fetchOne(spec, token)),
   );
   const errors: Partial<Record<SourceName, string>> = {};
+  const updates: Array<readonly [SourceName, FeedPart]> = [];
 
   results.forEach((result, index) => {
     const spec = specs[index];
     if (result.status === "fulfilled") {
-      feedParts.set(spec.name, result.value);
+      updates.push([spec.name, result.value]);
     } else {
       errors[spec.name] = safeFetchError(result.reason);
     }
   });
 
-  feedErrors = errors;
-  lastAttempt = now;
-  if (feedParts.size === 0) {
-    throw new Error("no realtime feed available");
-  }
-  return {
-    parts: Array.from(feedParts.values()),
-    attemptedAt: lastAttempt,
-    errors: { ...feedErrors },
-  };
+  return { updates, errors };
 }
 
 async function realtimeSnapshot(
@@ -451,30 +444,16 @@ async function realtimeSnapshot(
     ...specs.map((spec) => spec.url),
   ]);
   if (configuration !== activeConfiguration) {
-    feedParts.clear();
-    feedErrors = {};
-    lastAttempt = 0;
-    refreshInFlight = null;
+    feedCache.reset();
     activeConfiguration = configuration;
   }
 
-  if (
-    feedParts.size > 0 &&
-    now - lastAttempt < settings.cacheSeconds
-  ) {
-    return {
-      parts: Array.from(feedParts.values()),
-      attemptedAt: lastAttempt,
-      errors: { ...feedErrors },
-    };
-  }
-
-  if (!refreshInFlight) {
-    refreshInFlight = refreshFeeds(token, specs, now).finally(() => {
-      refreshInFlight = null;
-    });
-  }
-  return refreshInFlight;
+  return feedCache.getSnapshot(
+    now,
+    settings.cacheSeconds,
+    () => refreshFeeds(token, specs),
+    () => Date.now() / 1000,
+  );
 }
 
 function partAge(part: FeedPart, now: number): number {
@@ -826,7 +805,7 @@ export async function tramtracePayload(
     return jsonResponse({ error: "missing_tfnsw_api_token" }, 503);
   }
 
-  const now = Date.now() / 1000;
+  let now = Date.now() / 1000;
   const settings = runtimeSettings(env);
   let snapshot: FeedSnapshot;
   try {
@@ -834,6 +813,7 @@ export async function tramtracePayload(
   } catch {
     return jsonResponse({ error: "realtime_feed_unavailable" }, 503);
   }
+  now = Date.now() / 1000;
   const freshParts = snapshot.parts.filter((part) => {
     const sourceAge = now - (part.headerTimestamp || part.receivedAt);
     return (
@@ -862,6 +842,11 @@ export function tramtraceHealth(env: WorkerEnv): Response {
   const settings = runtimeSettings(env);
   const tokenConfigured = Boolean((env.TFNSW_API_TOKEN || "").trim());
   const staticLoaded = TRANSIT.index !== null;
+  const cachedSnapshot = feedCache.peek();
+  const feedParts = new Map(
+    cachedSnapshot.parts.map((part) => [part.spec.name, part]),
+  );
+  const feedErrors = cachedSnapshot.errors;
   const feeds = {} as Record<
     SourceName,
     { available: boolean; fresh: boolean; age: number | null; error: string | null }
@@ -908,7 +893,7 @@ export function tramtraceHealth(env: WorkerEnv): Response {
     staticLoaded &&
     allFeedsFresh &&
     allSchedulesAvailable;
-  const cachedParts = Array.from(feedParts.values());
+  const cachedParts = cachedSnapshot.parts;
   return jsonResponse(
     {
       ok,
@@ -925,6 +910,18 @@ export function tramtraceHealth(env: WorkerEnv): Response {
               Math.max(...cachedParts.map((part) => partAge(part, now))),
             )
           : null,
+      upstream: {
+        cache_seconds: settings.cacheSeconds,
+        last_attempt_age:
+          cachedSnapshot.attemptedAt > 0
+            ? Math.floor(Math.max(0, now - cachedSnapshot.attemptedAt))
+            : null,
+        retry_in: Math.ceil(
+          Math.max(0, cachedSnapshot.nextAttemptAt - now),
+        ),
+        consecutive_all_feed_failures:
+          cachedSnapshot.consecutiveAllFailures,
+      },
       feeds,
       schedules,
       error: TRANSIT.error,

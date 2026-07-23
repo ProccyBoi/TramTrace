@@ -10,11 +10,14 @@ from server.realtime import FeedSnapshot, TfNSWRealtimeClient
 from server.service import Settings, TramTraceService
 from server.state import STOPPED_AT
 
+
 class _SnapshotClient:
     def __init__(self, snapshot: FeedSnapshot):
         self.value = snapshot
+        self.requested_nows: list[float | None] = []
 
     def snapshot(self, *, now: float | None = None, force: bool = False) -> FeedSnapshot:
+        self.requested_nows.append(now)
         return self.value
 
     def cached_snapshot(self) -> FeedSnapshot:
@@ -41,10 +44,11 @@ def test_payload_contract_is_compact_and_directional(
     )
     snapshot = FeedSnapshot(parts=(part,), attempted_at=now, errors={})
     settings = Settings(api_token="test-token", brightness=24, poll_seconds=3)
+    realtime = _SnapshotClient(snapshot)
     service = TramTraceService(
         settings,
         static=static_gtfs,
-        realtime=_SnapshotClient(snapshot),  # type: ignore[arg-type]
+        realtime=realtime,  # type: ignore[arg-type]
     )
     client = TestClient(create_app(service))
 
@@ -64,6 +68,7 @@ def test_payload_contract_is_compact_and_directional(
     assert payload["poll_seconds"] == 3
     assert payload["states"]["L4"]["Childrens Hospital"] == [3, 0]
     assert response.headers["cache-control"] == "no-store"
+    assert realtime.requested_nows == [None]
 
 
 def test_one_stale_feed_does_not_block_other_fresh_routes(
@@ -95,16 +100,18 @@ def test_one_stale_feed_does_not_block_other_fresh_routes(
         attempted_at=now,
         errors={"innerwest": "timeout"},
     )
+    realtime = _SnapshotClient(snapshot)
     service = TramTraceService(
         Settings(api_token="test-token", max_feed_age_seconds=120),
         static=static_gtfs,
-        realtime=_SnapshotClient(snapshot),  # type: ignore[arg-type]
+        realtime=realtime,  # type: ignore[arg-type]
     )
 
     payload = service.payload(now=now)
     assert payload["feed_age"] == 3
     assert payload["states"]["L1"]["Bank Street"] == [0, 0]
     assert payload["states"]["L4"]["Childrens Hospital"] == [3, 0]
+    assert realtime.requested_nows == [now]
 
 
 def test_missing_token_fails_without_exposing_a_secret(static_gtfs: StaticGTFS) -> None:

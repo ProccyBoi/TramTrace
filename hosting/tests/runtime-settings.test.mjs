@@ -28,3 +28,11 @@ test("uses the tightened live-light distance defaults", async () => {
     },
   );
 });
+
+test("enforces a 15-second minimum upstream feed refresh", async () => {
+  const source = await readFile(sourceUrl, "utf8");
+  assert.match(
+    source,
+    /env\.TRAMTRACE_FEED_CACHE_SECONDS,\s*15,\s*15,\s*60/,
+  );
+});

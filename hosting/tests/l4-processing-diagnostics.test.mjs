@@ -419,7 +419,7 @@ test("uses one close Trip Update stop when the matching L4 position is stale", a
       entityId: "fallback-update",
       trip: { tripId },
       vehicleId: "tram-fallback",
-      timestamp: now,
+      timestamp: now - 3_600,
       stopTimeUpdates: [
         {
           stopSequence: 5,
@@ -510,6 +510,10 @@ test("uses one close Trip Update stop when the matching L4 position is stale", a
     assert.equal(diagnostic.raw_vehicle_records, 1);
     assert.equal(diagnostic.filtered.stale_records, 1);
     assert.equal(diagnostic.trip_update_fallback.feed_records, 1);
+    assert.equal(
+      diagnostic.trip_update_fallback.filtered.stale_timestamp_records,
+      1,
+    );
     assert.equal(diagnostic.trip_update_fallback.close_stop_records, 1);
     assert.equal(diagnostic.trip_update_fallback.candidate_records, 1);
     assert.equal(

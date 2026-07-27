@@ -7,6 +7,9 @@ states per station. Because L4 vehicle positions can be intermittently missing
 or stale, its Trip Update feed can supply one close stop within 90 seconds.
 Fresh vehicle positions always take precedence, and source-scoped vehicle and
 trip identities ensure one tram can win only one station in each payload.
+The fallback requires a fresh full feed and absolute near-term stop event; an
+unchanged per-trip timestamp is recorded diagnostically but is not treated as
+current position evidence.
 
 Successful board payloads are edge-cached for 15 seconds. The three
 vehicle-position feeds refresh no more often than every 15 seconds per Worker

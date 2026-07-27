@@ -58,7 +58,8 @@ interface L4ProcessingDiagnostics {
     candidate_records: number;
     suppressed_by_fresh_vehicle_position_records: number;
     filtered: {
-      stale_or_future_records: number;
+      stale_timestamp_records: number;
+      future_timestamp_records: number;
       unsupported_feed_records: number;
       deleted_or_canceled_records: number;
       ambiguous_trip_records: number;
@@ -1060,7 +1061,8 @@ function emptyL4ProcessingDiagnostics(): L4ProcessingDiagnostics {
       candidate_records: 0,
       suppressed_by_fresh_vehicle_position_records: 0,
       filtered: {
-        stale_or_future_records: 0,
+        stale_timestamp_records: 0,
+        future_timestamp_records: 0,
         unsupported_feed_records: 0,
         deleted_or_canceled_records: 0,
         ambiguous_trip_records: 0,
@@ -1309,12 +1311,19 @@ function calculateStateResult(
       for (const update of updates) {
         const updateTimestamp = update.timestamp ?? fallbackTimestamp;
         const updateAge = now - updateTimestamp;
-        if (
-          updateAge > MAX_L4_TRIP_UPDATE_AGE_SECONDS ||
-          updateAge < -settings.futureToleranceSeconds
-        ) {
-          fallback.filtered.stale_or_future_records += 1;
+        if (updateAge < -settings.futureToleranceSeconds) {
+          fallback.filtered.future_timestamp_records += 1;
           continue;
+        }
+        // TfNSW keeps some active-trip entity timestamps unchanged even while
+        // publishing a fresh FULL_DATASET feed. Retain that diagnostic, but
+        // let the current feed header plus the strict stop-event window decide
+        // whether the trip is close enough to display.
+        if (
+          update.timestamp !== undefined &&
+          updateAge > MAX_L4_TRIP_UPDATE_AGE_SECONDS
+        ) {
+          fallback.filtered.stale_timestamp_records += 1;
         }
         fallback.age_accepted_records += 1;
 

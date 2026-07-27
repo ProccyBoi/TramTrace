@@ -3,13 +3,16 @@
 This is the permanent Sites-hosted backend for the TramTrace ESP32 map. It
 fetches the three official Transport for NSW light-rail vehicle-position feeds,
 maps vehicles to the 68 route-stations on the PCB, and emits two directional
-states per station. Duplicate realtime rows are reconciled using TfNSW's
-source-scoped tracking-beacon and trip-instance identifiers so one vehicle can
-win only one station in each payload.
+states per station. Because L4 vehicle positions can be intermittently missing
+or stale, its Trip Update feed can supply one close stop within 90 seconds.
+Fresh vehicle positions always take precedence, and source-scoped vehicle and
+trip identities ensure one tram can win only one station in each payload.
 
-Upstream calls are shared across concurrent board requests and begin no more
-often than every 15 seconds. Failed all-feed refreshes are cached and retried
-with exponential backoff, while any still-fresh last-good feeds remain usable.
+Successful board payloads are edge-cached for 15 seconds. The three
+vehicle-position feeds refresh no more often than every 15 seconds per Worker
+instance, while the separate L4 Trip Update feed has a hard 60-second minimum
+and an edge cache. Failed refreshes use exponential backoff, and any
+still-fresh last-good feeds remain usable.
 
 ## Endpoints
 
@@ -25,13 +28,17 @@ Production values are managed by Sites and are not stored in this repository:
 
 - `TFNSW_API_TOKEN` (secret)
 - `TRAMTRACE_BOARD_KEY` (secret)
-- `TRAMTRACE_BRIGHTNESS` (default `20`, maximum `64`)
+- `TRAMTRACE_BRIGHTNESS` (default `24`, maximum `64`)
 - `TRAMTRACE_POLL_SECONDS` (default `3`)
 - `TRAMTRACE_FEED_CACHE_SECONDS` (default and hard minimum `15`)
 - `TRAMTRACE_AT_STATION_METRES` (default `120`)
 - `TRAMTRACE_APPROACHING_METRES` (default `450`)
 - `TRAMTRACE_FAR_METRES` (default `800`)
 - `TRAMTRACE_L4_FAR_METRES` (default `1700`; reported next stops only)
+- `TRAMTRACE_L4_TRIP_UPDATE_CACHE_SECONDS` (default and hard minimum `60`)
+- `TRAMTRACE_L4_TRIP_UPDATE_FAR_SECONDS` (default `90`; maximum lookahead)
+- `TRAMTRACE_L4_TRIP_UPDATE_URL` (defaults to the official Parramatta Light
+  Rail Trip Update endpoint)
 
 ## Static transit index
 

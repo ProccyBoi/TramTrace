@@ -44,10 +44,29 @@ function floatField(field, value) {
   return Buffer.concat([tag(field, 5), bytes]);
 }
 
-function tripDescriptor({ tripId, directionId }) {
+function tripDescriptor({
+  tripId,
+  directionId,
+  startTime,
+  startDate,
+  scheduleRelationship,
+  routeId,
+}) {
   const fields = [];
   if (tripId) {
     fields.push(stringField(1, tripId));
+  }
+  if (startTime) {
+    fields.push(stringField(2, startTime));
+  }
+  if (startDate) {
+    fields.push(stringField(3, startDate));
+  }
+  if (scheduleRelationship !== undefined) {
+    fields.push(varintField(4, scheduleRelationship));
+  }
+  if (routeId) {
+    fields.push(stringField(5, routeId));
   }
   if (directionId !== undefined) {
     fields.push(varintField(6, directionId));
@@ -58,6 +77,8 @@ function tripDescriptor({ tripId, directionId }) {
 function vehiclePosition({
   tripId,
   directionId,
+  startTime,
+  startDate,
   latitude,
   longitude,
   stopSequence,
@@ -67,7 +88,10 @@ function vehiclePosition({
   vehicleId,
 }) {
   const fields = [
-    bytesField(1, tripDescriptor({ tripId, directionId })),
+    bytesField(
+      1,
+      tripDescriptor({ tripId, directionId, startTime, startDate }),
+    ),
   ];
   if (latitude !== undefined && longitude !== undefined) {
     fields.push(
@@ -105,6 +129,55 @@ function entity(entityId, vehicle) {
   }
   fields.push(bytesField(4, vehiclePosition(vehicle)));
   return Buffer.concat(fields);
+}
+
+function stopTimeUpdate({
+  stopSequence,
+  arrivalTime,
+  departureTime,
+  stopId,
+  scheduleRelationship,
+}) {
+  const fields = [];
+  if (stopSequence !== undefined) {
+    fields.push(varintField(1, stopSequence));
+  }
+  if (arrivalTime !== undefined) {
+    fields.push(bytesField(2, varintField(2, arrivalTime)));
+  }
+  if (departureTime !== undefined) {
+    fields.push(bytesField(3, varintField(2, departureTime)));
+  }
+  if (stopId) {
+    fields.push(stringField(4, stopId));
+  }
+  if (scheduleRelationship !== undefined) {
+    fields.push(varintField(5, scheduleRelationship));
+  }
+  return Buffer.concat(fields);
+}
+
+function tripUpdateEntity({
+  entityId,
+  trip,
+  stopTimeUpdates,
+  vehicleId,
+  timestamp,
+}) {
+  const tripUpdateFields = [bytesField(1, tripDescriptor(trip))];
+  for (const update of stopTimeUpdates) {
+    tripUpdateFields.push(bytesField(2, stopTimeUpdate(update)));
+  }
+  if (vehicleId) {
+    tripUpdateFields.push(bytesField(3, stringField(1, vehicleId)));
+  }
+  if (timestamp !== undefined) {
+    tripUpdateFields.push(varintField(4, timestamp));
+  }
+  return Buffer.concat([
+    stringField(1, entityId),
+    bytesField(3, Buffer.concat(tripUpdateFields)),
+  ]);
 }
 
 function feedMessage(timestamp, entities) {
@@ -172,12 +245,24 @@ test("reports the exact L4 processing funnel without another upstream fetch", as
   const emptyFeed = feedMessage(now, []);
   let fetchCount = 0;
   const originalFetch = globalThis.fetch;
+  const originalCaches = globalThis.caches;
   const originalLog = console.log;
   const logs = [];
+  const edgeEntries = new Map();
+  globalThis.caches = {
+    default: {
+      async match(request) {
+        return edgeEntries.get(request.url)?.clone();
+      },
+      async put(request, response) {
+        edgeEntries.set(request.url, response.clone());
+      },
+    },
+  };
   globalThis.fetch = async (input) => {
     fetchCount += 1;
     const url = String(input);
-    return new Response(url.includes("parramatta") ? l4Feed : emptyFeed, {
+    return new Response(url.includes("vehiclepos/lightrail/parramatta") ? l4Feed : emptyFeed, {
       status: 200,
       headers: { "Content-Type": "application/x-protobuf" },
     });
@@ -208,7 +293,25 @@ test("reports the exact L4 processing funnel without another upstream fetch", as
       context,
     );
     assert.equal(payloadResponse.status, 200);
-    assert.equal(fetchCount, 3);
+    assert.equal(fetchCount, 4);
+    const cachedPayloadResponse = await worker.fetch(
+      new Request(
+        "https://tramtrace.test/tramtrace_payload?board_id=test-board",
+      ),
+      env,
+      context,
+    );
+    assert.equal(cachedPayloadResponse.status, 200);
+    assert.equal(fetchCount, 4);
+    const unauthorizedCachedResponse = await worker.fetch(
+      new Request(
+        "https://tramtrace.test/tramtrace_payload?board_id=wrong-board",
+      ),
+      env,
+      context,
+    );
+    assert.equal(unauthorizedCachedResponse.status, 401);
+    assert.equal(fetchCount, 4);
 
     const diagnosticLog = logs.find((line) =>
       line.includes('"event":"tramtrace_l4_processing"'),
@@ -247,6 +350,7 @@ test("reports the exact L4 processing funnel without another upstream fetch", as
         slots: 1,
         coalesced: 0,
         filtered: {
+          deleted_records: 0,
           stale_records: 1,
           future_records: 0,
           unresolved_route_or_direction_records: 1,
@@ -266,7 +370,7 @@ test("reports the exact L4 processing funnel without another upstream fetch", as
       context,
     );
     assert.equal(healthResponse.status, 200);
-    assert.equal(fetchCount, 3);
+    assert.equal(fetchCount, 4);
     const healthText = await healthResponse.text();
     assert.doesNotMatch(
       healthText,
@@ -276,9 +380,314 @@ test("reports the exact L4 processing funnel without another upstream fetch", as
     const healthDiagnostic = { ...diagnostic };
     delete healthDiagnostic.event;
     delete healthDiagnostic.feed_age_seconds;
+    delete healthDiagnostic.trip_update_feed_age_seconds;
     assert.deepEqual(health.l4_processing, healthDiagnostic);
   } finally {
     globalThis.fetch = originalFetch;
+    if (originalCaches === undefined) {
+      delete globalThis.caches;
+    } else {
+      globalThis.caches = originalCaches;
+    }
+    console.log = originalLog;
+  }
+});
+
+test("uses one close Trip Update stop when the matching L4 position is stale", async () => {
+  const transitData = JSON.parse(await readFile(transitDataUrl, "utf8"));
+  const tripId = "42686-10007:1000";
+  const firstStation = transitData.routes.L4.stations[0];
+  const secondStation = transitData.routes.L4.stations[1];
+  const stops = transitData.sources.parramatta.stops.L4;
+  const firstStopId = Object.keys(stops).find((key) => stops[key] === 0);
+  const secondStopId = Object.keys(stops).find((key) => stops[key] === 1);
+  assert.ok(firstStopId);
+  assert.ok(secondStopId);
+
+  const now = Math.floor(Date.now() / 1000);
+  const l4VehicleFeed = feedMessage(now, [
+    entity("stale-position", {
+      tripId,
+      currentStatus: 1,
+      timestamp: now - 120,
+      stopId: secondStopId,
+      vehicleId: "tram-fallback",
+    }),
+  ]);
+  const l4TripUpdateFeed = feedMessage(now, [
+    tripUpdateEntity({
+      entityId: "fallback-update",
+      trip: { tripId },
+      vehicleId: "tram-fallback",
+      timestamp: now,
+      stopTimeUpdates: [
+        {
+          stopSequence: 5,
+          arrivalTime: now + 30,
+          departureTime: now + 40,
+          stopId: firstStopId,
+        },
+        {
+          stopSequence: 4,
+          arrivalTime: now + 60,
+          departureTime: now + 70,
+          stopId: secondStopId,
+        },
+      ],
+    }),
+  ]);
+  const emptyFeed = feedMessage(now, []);
+  const originalFetch = globalThis.fetch;
+  const originalCaches = globalThis.caches;
+  const originalLog = console.log;
+  const edgeEntries = new Map();
+  const logs = [];
+  let fetchCount = 0;
+  globalThis.caches = {
+    default: {
+      async match(request) {
+        return edgeEntries.get(request.url)?.clone();
+      },
+      async put(request, response) {
+        edgeEntries.set(request.url, response.clone());
+      },
+    },
+  };
+  globalThis.fetch = async (input) => {
+    fetchCount += 1;
+    const url = String(input);
+    const body = url.includes("vehiclepos/lightrail/parramatta")
+      ? l4VehicleFeed
+      : url.includes("realtime/lightrail/parramatta")
+        ? l4TripUpdateFeed
+        : emptyFeed;
+    return new Response(body, {
+      status: 200,
+      headers: { "Content-Type": "application/x-protobuf" },
+    });
+  };
+  console.log = (...values) => logs.push(values.join(" "));
+
+  try {
+    const workerUrl = new URL(
+      `../dist/server/index.js?fallback=${Date.now()}`,
+      import.meta.url,
+    );
+    const worker = (await import(workerUrl.href)).default;
+    const env = {
+      TFNSW_API_TOKEN: "fallback-token",
+      TRAMTRACE_BOARD_KEY: "fallback-board",
+      TRAMTRACE_MAX_VEHICLE_AGE_SECONDS: "90",
+    };
+    const context = {
+      waitUntil() {},
+      passThroughOnException() {},
+    };
+    const requestUrl =
+      "https://fallback.test/tramtrace_payload?board_id=fallback-board";
+    const response = await worker.fetch(
+      new Request(requestUrl),
+      env,
+      context,
+    );
+    assert.equal(response.status, 200);
+    assert.equal(fetchCount, 4);
+    const payload = await response.json();
+    assert.deepEqual(payload.states.L4[firstStation[0]], [0, 2]);
+    assert.deepEqual(payload.states.L4[secondStation[0]], [0, 0]);
+    assert.equal(
+      Object.values(payload.states.L4).filter(
+        (directions) => directions[0] > 0 || directions[1] > 0,
+      ).length,
+      1,
+    );
+
+    const diagnostic = JSON.parse(
+      logs.find((line) =>
+        line.includes('"event":"tramtrace_l4_processing"'),
+      ),
+    );
+    assert.equal(diagnostic.raw_vehicle_records, 1);
+    assert.equal(diagnostic.filtered.stale_records, 1);
+    assert.equal(diagnostic.trip_update_fallback.feed_records, 1);
+    assert.equal(diagnostic.trip_update_fallback.close_stop_records, 1);
+    assert.equal(diagnostic.trip_update_fallback.candidate_records, 1);
+    assert.equal(
+      diagnostic.trip_update_fallback
+        .suppressed_by_fresh_vehicle_position_records,
+      0,
+    );
+    assert.equal(diagnostic.active_station_direction_slots, 1);
+
+    const cachedResponse = await worker.fetch(
+      new Request(requestUrl),
+      env,
+      context,
+    );
+    assert.equal(cachedResponse.status, 200);
+    assert.equal(fetchCount, 4);
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalCaches === undefined) {
+      delete globalThis.caches;
+    } else {
+      globalThis.caches = originalCaches;
+    }
+    console.log = originalLog;
+  }
+});
+
+test("fresh dark L4 positions retain authority over Trip Updates", async () => {
+  const transitData = JSON.parse(await readFile(transitDataUrl, "utf8"));
+  const tripId = "42686-10007:1000";
+  const conflictingTripId = "42686-10013:1000";
+  const stops = transitData.sources.parramatta.stops.L4;
+  const stopId = Object.keys(stops).find((key) => stops[key] === 0);
+  assert.ok(stopId);
+
+  const now = Math.floor(Date.now() / 1000);
+  const l4VehicleFeed = feedMessage(now, [
+    entity("fresh-position", {
+      tripId,
+      latitude: 0,
+      longitude: 0,
+      currentStatus: 2,
+      timestamp: now,
+      stopId,
+      vehicleId: "tram-authority",
+    }),
+    entity("conflicting-instance-position", {
+      tripId: conflictingTripId,
+      startDate: "20260727",
+      latitude: 0,
+      longitude: 0,
+      currentStatus: 2,
+      timestamp: now,
+      stopId,
+      vehicleId: "position-only-identity",
+    }),
+  ]);
+  const l4TripUpdateFeed = feedMessage(now, [
+    tripUpdateEntity({
+      entityId: "suppressed-update",
+      trip: { tripId },
+      vehicleId: "tram-authority",
+      timestamp: now,
+      stopTimeUpdates: [
+        {
+          stopSequence: 5,
+          arrivalTime: now + 30,
+          departureTime: now + 40,
+          stopId,
+        },
+      ],
+    }),
+    tripUpdateEntity({
+      entityId: "ambiguous-instance-update",
+      trip: {
+        tripId: conflictingTripId,
+        startDate: "20260728",
+      },
+      vehicleId: "update-only-identity",
+      timestamp: now,
+      stopTimeUpdates: [
+        {
+          stopSequence: 5,
+          arrivalTime: now + 30,
+          departureTime: now + 40,
+          stopId,
+        },
+      ],
+    }),
+  ]);
+  const emptyFeed = feedMessage(now, []);
+  const originalFetch = globalThis.fetch;
+  const originalCaches = globalThis.caches;
+  const originalLog = console.log;
+  const edgeEntries = new Map();
+  const logs = [];
+  let fetchCount = 0;
+  globalThis.caches = {
+    default: {
+      async match(request) {
+        return edgeEntries.get(request.url)?.clone();
+      },
+      async put(request, response) {
+        edgeEntries.set(request.url, response.clone());
+      },
+    },
+  };
+  globalThis.fetch = async (input) => {
+    fetchCount += 1;
+    const url = String(input);
+    const body = url.includes("vehiclepos/lightrail/parramatta")
+      ? l4VehicleFeed
+      : url.includes("realtime/lightrail/parramatta")
+        ? l4TripUpdateFeed
+        : emptyFeed;
+    return new Response(body, {
+      status: 200,
+      headers: { "Content-Type": "application/x-protobuf" },
+    });
+  };
+  console.log = (...values) => logs.push(values.join(" "));
+
+  try {
+    const workerUrl = new URL(
+      `../dist/server/index.js?suppression=${Date.now()}`,
+      import.meta.url,
+    );
+    const worker = (await import(workerUrl.href)).default;
+    const env = {
+      TFNSW_API_TOKEN: "suppression-token",
+      TRAMTRACE_BOARD_KEY: "suppression-board",
+    };
+    const context = {
+      waitUntil() {},
+      passThroughOnException() {},
+    };
+    const response = await worker.fetch(
+      new Request(
+        "https://suppression.test/tramtrace_payload?board_id=suppression-board",
+      ),
+      env,
+      context,
+    );
+    assert.equal(response.status, 200);
+    assert.equal(fetchCount, 4);
+    const payload = await response.json();
+    assert.equal(
+      Object.values(payload.states.L4).filter(
+        (directions) => directions[0] > 0 || directions[1] > 0,
+      ).length,
+      0,
+    );
+
+    const diagnostic = JSON.parse(
+      logs.find((line) =>
+        line.includes('"event":"tramtrace_l4_processing"'),
+      ),
+    );
+    assert.equal(diagnostic.candidate_state_records.off, 2);
+    assert.equal(diagnostic.trip_update_fallback.candidate_records, 0);
+    assert.equal(
+      diagnostic.trip_update_fallback
+        .suppressed_by_fresh_vehicle_position_records,
+      1,
+    );
+    assert.equal(
+      diagnostic.trip_update_fallback.filtered
+        .ambiguous_identity_records,
+      1,
+    );
+    assert.equal(diagnostic.active_station_direction_slots, 0);
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalCaches === undefined) {
+      delete globalThis.caches;
+    } else {
+      globalThis.caches = originalCaches;
+    }
     console.log = originalLog;
   }
 });

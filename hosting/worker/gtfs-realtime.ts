@@ -1,22 +1,24 @@
 /**
  * Minimal, dependency-free GTFS-Realtime decoder.
  *
- * TfNSW's vehicle-position endpoints return standard GTFS-Realtime protobufs.
- * TramTrace only needs FeedHeader.timestamp and the VehiclePosition subset, so
- * decoding those fields directly keeps the deployed Worker small and avoids a
- * Node-specific protobuf runtime.
+ * TfNSW's endpoints return standard GTFS-Realtime protobufs. TramTrace only
+ * needs FeedHeader.timestamp plus focused VehiclePosition and TripUpdate
+ * subsets, so decoding those fields directly keeps the deployed Worker small
+ * and avoids a Node-specific protobuf runtime.
  */
 
 export interface TripDescriptor {
   tripId?: string;
   startTime?: string;
   startDate?: string;
+  scheduleRelationship?: number;
   routeId?: string;
   directionId?: number;
 }
 
 export interface VehiclePosition {
   entityId?: string;
+  isDeleted: boolean;
   vehicleId?: string;
   trip?: TripDescriptor;
   stopId?: string;
@@ -27,9 +29,28 @@ export interface VehiclePosition {
   timestamp?: number;
 }
 
+export interface StopTimeUpdate {
+  stopSequence?: number;
+  arrivalTime?: number;
+  departureTime?: number;
+  stopId?: string;
+  scheduleRelationship?: number;
+}
+
+export interface TripUpdate {
+  entityId?: string;
+  isDeleted: boolean;
+  trip?: TripDescriptor;
+  timestamp?: number;
+  stopTimeUpdates: StopTimeUpdate[];
+  vehicleId?: string;
+}
+
 export interface FeedMessage {
   headerTimestamp?: number;
+  incrementality: number;
   vehicles: VehiclePosition[];
+  tripUpdates: TripUpdate[];
 }
 
 class ProtobufReader {
@@ -135,20 +156,29 @@ class ProtobufReader {
   }
 }
 
-function decodeHeader(bytes: Uint8Array): number | undefined {
+interface DecodedHeader {
+  incrementality: number;
+  timestamp?: number;
+}
+
+function decodeHeader(bytes: Uint8Array): DecodedHeader {
   const reader = new ProtobufReader(bytes);
+  // FeedHeader.incrementality defaults to FULL_DATASET (0) in the proto.
+  let incrementality = 0;
   let timestamp: number | undefined;
 
   while (!reader.done) {
     const { field, wire } = reader.tag();
-    if (field === 3 && wire === 0) {
+    if (field === 2 && wire === 0) {
+      incrementality = reader.uint64();
+    } else if (field === 3 && wire === 0) {
       timestamp = reader.uint64();
     } else {
       reader.skip(wire);
     }
   }
 
-  return timestamp;
+  return { incrementality, timestamp };
 }
 
 function decodeTrip(bytes: Uint8Array): TripDescriptor {
@@ -163,6 +193,8 @@ function decodeTrip(bytes: Uint8Array): TripDescriptor {
       trip.startTime = reader.string() || undefined;
     } else if (field === 3 && wire === 2) {
       trip.startDate = reader.string() || undefined;
+    } else if (field === 4 && wire === 0) {
+      trip.scheduleRelationship = reader.uint64();
     } else if (field === 5 && wire === 2) {
       trip.routeId = reader.string() || undefined;
     } else if (field === 6 && wire === 0) {
@@ -212,9 +244,76 @@ function decodeVehicleDescriptor(bytes: Uint8Array): string | undefined {
   return vehicleId;
 }
 
+function decodeStopTimeEventTime(bytes: Uint8Array): number | undefined {
+  const reader = new ProtobufReader(bytes);
+  let time: number | undefined;
+
+  while (!reader.done) {
+    const { field, wire } = reader.tag();
+    if (field === 2 && wire === 0) {
+      time = reader.uint64();
+    } else {
+      reader.skip(wire);
+    }
+  }
+
+  return time;
+}
+
+function decodeStopTimeUpdate(bytes: Uint8Array): StopTimeUpdate {
+  const reader = new ProtobufReader(bytes);
+  const update: StopTimeUpdate = {};
+
+  while (!reader.done) {
+    const { field, wire } = reader.tag();
+    if (field === 1 && wire === 0) {
+      update.stopSequence = reader.uint64();
+    } else if (field === 2 && wire === 2) {
+      update.arrivalTime = decodeStopTimeEventTime(reader.bytesField());
+    } else if (field === 3 && wire === 2) {
+      update.departureTime = decodeStopTimeEventTime(reader.bytesField());
+    } else if (field === 4 && wire === 2) {
+      update.stopId = reader.string() || undefined;
+    } else if (field === 5 && wire === 0) {
+      update.scheduleRelationship = reader.uint64();
+    } else {
+      reader.skip(wire);
+    }
+  }
+
+  return update;
+}
+
+function decodeTripUpdate(bytes: Uint8Array): TripUpdate {
+  const reader = new ProtobufReader(bytes);
+  const update: TripUpdate = {
+    isDeleted: false,
+    stopTimeUpdates: [],
+  };
+
+  while (!reader.done) {
+    const { field, wire } = reader.tag();
+    if (field === 1 && wire === 2) {
+      update.trip = decodeTrip(reader.bytesField());
+    } else if (field === 2 && wire === 2) {
+      update.stopTimeUpdates.push(decodeStopTimeUpdate(reader.bytesField()));
+    } else if (field === 3 && wire === 2) {
+      update.vehicleId = decodeVehicleDescriptor(reader.bytesField());
+    } else if (field === 4 && wire === 0) {
+      update.timestamp = reader.uint64();
+    } else {
+      reader.skip(wire);
+    }
+  }
+
+  return update;
+}
+
 function decodeVehicle(bytes: Uint8Array): VehiclePosition {
   const reader = new ProtobufReader(bytes);
   const vehicle: VehiclePosition = {
+    // FeedEntity.is_deleted defaults to false in the proto.
+    isDeleted: false,
     // GTFS-Realtime declares IN_TRANSIT_TO (2) as the protobuf default.
     currentStatus: 2,
   };
@@ -243,15 +342,26 @@ function decodeVehicle(bytes: Uint8Array): VehiclePosition {
   return vehicle;
 }
 
-function decodeEntity(bytes: Uint8Array): VehiclePosition | undefined {
+interface DecodedEntity {
+  tripUpdate?: TripUpdate;
+  vehicle?: VehiclePosition;
+}
+
+function decodeEntity(bytes: Uint8Array): DecodedEntity {
   const reader = new ProtobufReader(bytes);
   let entityId: string | undefined;
+  let isDeleted = false;
+  let tripUpdate: TripUpdate | undefined;
   let vehicle: VehiclePosition | undefined;
 
   while (!reader.done) {
     const { field, wire } = reader.tag();
     if (field === 1 && wire === 2) {
       entityId = reader.string() || undefined;
+    } else if (field === 2 && wire === 0) {
+      isDeleted = reader.uint64() !== 0;
+    } else if (field === 3 && wire === 2) {
+      tripUpdate = decodeTripUpdate(reader.bytesField());
     } else if (field === 4 && wire === 2) {
       vehicle = decodeVehicle(reader.bytesField());
     } else {
@@ -261,28 +371,40 @@ function decodeEntity(bytes: Uint8Array): VehiclePosition | undefined {
 
   if (vehicle) {
     vehicle.entityId = entityId;
+    vehicle.isDeleted = isDeleted;
   }
-  return vehicle;
+  if (tripUpdate) {
+    tripUpdate.entityId = entityId;
+    tripUpdate.isDeleted = isDeleted;
+  }
+  return { tripUpdate, vehicle };
 }
 
 export function decodeFeedMessage(bytes: Uint8Array): FeedMessage {
   const reader = new ProtobufReader(bytes);
   const vehicles: VehiclePosition[] = [];
+  const tripUpdates: TripUpdate[] = [];
   let headerTimestamp: number | undefined;
+  let incrementality = 0;
 
   while (!reader.done) {
     const { field, wire } = reader.tag();
     if (field === 1 && wire === 2) {
-      headerTimestamp = decodeHeader(reader.bytesField());
+      const header = decodeHeader(reader.bytesField());
+      headerTimestamp = header.timestamp;
+      incrementality = header.incrementality;
     } else if (field === 2 && wire === 2) {
-      const vehicle = decodeEntity(reader.bytesField());
-      if (vehicle) {
-        vehicles.push(vehicle);
+      const entity = decodeEntity(reader.bytesField());
+      if (entity.vehicle) {
+        vehicles.push(entity.vehicle);
+      }
+      if (entity.tripUpdate) {
+        tripUpdates.push(entity.tripUpdate);
       }
     } else {
       reader.skip(wire);
     }
   }
 
-  return { headerTimestamp, vehicles };
+  return { headerTimestamp, incrementality, vehicles, tripUpdates };
 }

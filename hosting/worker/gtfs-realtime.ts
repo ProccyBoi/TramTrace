@@ -132,7 +132,7 @@ class ProtobufReader {
   skip(wire: number): void {
     switch (wire) {
       case 0:
-        this.uint64();
+        this.skipVarint();
         return;
       case 1:
         this.advance(8);
@@ -153,6 +153,20 @@ class ProtobufReader {
       throw new Error("truncated protobuf field");
     }
     this.offset += length;
+  }
+
+  private skipVarint(): void {
+    for (let count = 0; count < 10; count += 1) {
+      if (this.offset >= this.end) {
+        throw new Error("truncated protobuf varint");
+      }
+      const byte = this.bytes[this.offset];
+      this.offset += 1;
+      if ((byte & 0x80) === 0) {
+        return;
+      }
+    }
+    throw new Error("invalid protobuf varint");
   }
 }
 

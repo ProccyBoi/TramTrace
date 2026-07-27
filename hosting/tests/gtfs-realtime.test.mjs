@@ -21,6 +21,10 @@ const MINIMAL_TRIP_UPDATE_FIXTURE =
 // VehiclePosition verifies FeedEntity.is_deleted propagation for both types.
 const DELETED_DIFFERENTIAL_FIXTURE =
   "Cg0KAzIuMBABGPix8NIGEjIKCmRlbGV0ZWQtdHUQARoiCiAKDGRlbGV0ZWQtdHJpcCoOSVNELTE3LTY3MjBfTDQwARJhCgpkZWxldGVkLXZwEAEiUQooChRkZWxldGVkLXZlaGljbGUtdHJpcCoOSVNELTE3LTY3MjBfTDQwACACKPOx8NIGOgcyMTUwMTMyQhQKEmRlbGV0ZWQtdmVoaWNsZS1pZA==";
+// TfNSW Trip Updates include signed delay fields. Negative int32 values use a
+// ten-byte protobuf varint, which must be skipped without unsigned conversion.
+const SIGNED_DELAY_FIXTURE =
+  "CgUKAzIuMBJDCgxzaWduZWQtZGVsYXkaMwoTChFzaWduZWQtZGVsYXktdHJpcBIcEhEI4v//////////ARCErvDSBiIHMjE1MDEzMg==";
 
 test("decodes the GTFS-Realtime vehicle fields TramTrace uses", () => {
   const decoded = decodeFeedMessage(
@@ -168,6 +172,19 @@ test("decodes differential incrementality and deleted entities", () => {
       stopId: "2150132",
       currentStatus: 2,
       timestamp: 1_784_420_595,
+    },
+  ]);
+});
+
+test("skips negative signed delays while retaining absolute event times", () => {
+  const decoded = decodeFeedMessage(
+    Uint8Array.from(Buffer.from(SIGNED_DELAY_FIXTURE, "base64")),
+  );
+
+  assert.deepEqual(decoded.tripUpdates[0]?.stopTimeUpdates, [
+    {
+      arrivalTime: 1_784_420_100,
+      stopId: "2150132",
     },
   ]);
 });

@@ -23,6 +23,46 @@ type Direction = 0 | 1;
 type StationTuple = [name: string, latitude: number | null, longitude: number | null];
 type StateMap = Record<Route, Record<string, [number, number]>>;
 
+interface L4ProcessingDiagnostics {
+  raw_vehicle_records: number;
+  age_accepted_records: number;
+  accepted_with_trip_id_records: number;
+  accepted_with_stop_id_records: number;
+  accepted_with_position_records: number;
+  resolved_route_direction_records: number;
+  reported_station_records: number;
+  nearest_station_records: number;
+  candidate_records: number;
+  unidentified_candidate_records: number;
+  candidate_state_records: {
+    off: number;
+    far: number;
+    approaching: number;
+    at_station: number;
+  };
+  unique_vehicle_records: number;
+  dark_unique_vehicle_records: number;
+  visible_vehicle_records: number;
+  active_station_direction_slots: number;
+  coalesced_visible_vehicle_records: number;
+  filtered: {
+    stale_records: number;
+    future_records: number;
+    unresolved_route_or_direction_records: number;
+    no_station_records: number;
+    unknown_station_records: number;
+    outside_visibility_range_records: number;
+    outside_reported_station_range_records: number;
+    outside_nearest_station_range_records: number;
+    duplicate_records: number;
+  };
+}
+
+interface StateCalculation {
+  states: StateMap;
+  l4Processing: L4ProcessingDiagnostics;
+}
+
 interface RawRouteData {
   source: string;
   termini: [string, string];
@@ -366,6 +406,8 @@ function feedSpecs(env: WorkerEnv): FeedSpec[] {
 
 const feedCache = new FeedRefreshCache<SourceName, FeedPart>();
 let activeConfiguration = "";
+let lastL4DiagnosticsLogAt = 0;
+let lastL4DiagnosticsSignature = "";
 
 function safeFetchError(error: unknown): string {
   if (error instanceof Error) {
@@ -697,30 +739,100 @@ function vehicleIdentityKeys(
   return keys;
 }
 
-function calculateStates(
+function emptyL4ProcessingDiagnostics(): L4ProcessingDiagnostics {
+  return {
+    raw_vehicle_records: 0,
+    age_accepted_records: 0,
+    accepted_with_trip_id_records: 0,
+    accepted_with_stop_id_records: 0,
+    accepted_with_position_records: 0,
+    resolved_route_direction_records: 0,
+    reported_station_records: 0,
+    nearest_station_records: 0,
+    candidate_records: 0,
+    unidentified_candidate_records: 0,
+    candidate_state_records: {
+      off: 0,
+      far: 0,
+      approaching: 0,
+      at_station: 0,
+    },
+    unique_vehicle_records: 0,
+    dark_unique_vehicle_records: 0,
+    visible_vehicle_records: 0,
+    active_station_direction_slots: 0,
+    coalesced_visible_vehicle_records: 0,
+    filtered: {
+      stale_records: 0,
+      future_records: 0,
+      unresolved_route_or_direction_records: 0,
+      no_station_records: 0,
+      unknown_station_records: 0,
+      outside_visibility_range_records: 0,
+      outside_reported_station_range_records: 0,
+      outside_nearest_station_range_records: 0,
+      duplicate_records: 0,
+    },
+  };
+}
+
+function calculateStateResult(
   parts: FeedPart[],
   index: TransitIndex,
   settings: RuntimeSettings,
   now: number,
-): StateMap {
+): StateCalculation {
   const states = emptyStates(index);
+  const l4Processing = emptyL4ProcessingDiagnostics();
   const candidates: VehicleCandidate<Route>[] = [];
 
   for (const part of parts) {
     for (const vehicle of part.message.vehicles) {
+      const isL4Source = part.spec.name === "parramatta";
+      if (isL4Source) {
+        l4Processing.raw_vehicle_records += 1;
+      }
       if (vehicle.timestamp !== undefined) {
         const age = now - vehicle.timestamp;
         if (
           age > settings.maxVehicleAgeSeconds ||
           age < -settings.futureToleranceSeconds
         ) {
+          if (isL4Source) {
+            if (age > settings.maxVehicleAgeSeconds) {
+              l4Processing.filtered.stale_records += 1;
+            } else {
+              l4Processing.filtered.future_records += 1;
+            }
+          }
           continue;
+        }
+      }
+      if (isL4Source) {
+        l4Processing.age_accepted_records += 1;
+        if (vehicle.trip?.tripId) {
+          l4Processing.accepted_with_trip_id_records += 1;
+        }
+        if (vehicle.stopId) {
+          l4Processing.accepted_with_stop_id_records += 1;
+        }
+        if (
+          vehicle.latitude !== undefined &&
+          vehicle.longitude !== undefined
+        ) {
+          l4Processing.accepted_with_position_records += 1;
         }
       }
 
       const resolved = resolveVehicle(part, vehicle, index);
       if (!resolved) {
+        if (isL4Source) {
+          l4Processing.filtered.unresolved_route_or_direction_records += 1;
+        }
         continue;
+      }
+      if (resolved.route === "L4") {
+        l4Processing.resolved_route_direction_records += 1;
       }
       const source = index.sources[part.spec.name];
       const routeData = index.routes[resolved.route];
@@ -746,9 +858,11 @@ function calculateStates(
         distance = nearest.distance;
       }
       if (stationIndex === null) {
+        if (resolved.route === "L4") {
+          l4Processing.filtered.no_station_records += 1;
+        }
         continue;
       }
-
       const state = vehicleState(
         resolved.route,
         vehicle,
@@ -758,10 +872,42 @@ function calculateStates(
       );
       const stationName = routeData.stations[stationIndex]?.[0];
       if (!stationName || !states[resolved.route][stationName]) {
+        if (resolved.route === "L4") {
+          l4Processing.filtered.unknown_station_records += 1;
+        }
         continue;
       }
+      const identityKeys = vehicleIdentityKeys(part.spec.name, vehicle);
+      if (resolved.route === "L4") {
+        if (reported) {
+          l4Processing.reported_station_records += 1;
+        } else {
+          l4Processing.nearest_station_records += 1;
+        }
+        l4Processing.candidate_records += 1;
+        if (identityKeys.length === 0) {
+          l4Processing.unidentified_candidate_records += 1;
+        }
+        if (state === 0) {
+          l4Processing.candidate_state_records.off += 1;
+        } else if (state === 1) {
+          l4Processing.candidate_state_records.far += 1;
+        } else if (state === 2) {
+          l4Processing.candidate_state_records.approaching += 1;
+        } else {
+          l4Processing.candidate_state_records.at_station += 1;
+        }
+        if (state <= 0) {
+          l4Processing.filtered.outside_visibility_range_records += 1;
+          if (reported) {
+            l4Processing.filtered.outside_reported_station_range_records += 1;
+          } else {
+            l4Processing.filtered.outside_nearest_station_range_records += 1;
+          }
+        }
+      }
       candidates.push({
-        identityKeys: vehicleIdentityKeys(part.spec.name, vehicle),
+        identityKeys,
         route: resolved.route,
         direction: resolved.direction,
         stationIndex,
@@ -776,7 +922,16 @@ function calculateStates(
     }
   }
 
-  for (const candidate of deduplicateVehicleCandidates(candidates)) {
+  const uniqueCandidates = deduplicateVehicleCandidates(candidates);
+  for (const candidate of uniqueCandidates) {
+    if (candidate.route === "L4") {
+      l4Processing.unique_vehicle_records += 1;
+      if (candidate.state > 0) {
+        l4Processing.visible_vehicle_records += 1;
+      } else {
+        l4Processing.dark_unique_vehicle_records += 1;
+      }
+    }
     if (candidate.state <= 0) {
       continue;
     }
@@ -784,10 +939,48 @@ function calculateStates(
       Math.max(
         states[candidate.route][candidate.stationName][candidate.direction],
         candidate.state,
-      );
+    );
   }
 
-  return states;
+  l4Processing.filtered.duplicate_records = Math.max(
+    0,
+    l4Processing.candidate_records - l4Processing.unique_vehicle_records,
+  );
+  l4Processing.active_station_direction_slots = Object.values(states.L4).reduce(
+    (total, directions) =>
+      total + Number(directions[0] > 0) + Number(directions[1] > 0),
+    0,
+  );
+  l4Processing.coalesced_visible_vehicle_records = Math.max(
+    0,
+    l4Processing.visible_vehicle_records -
+      l4Processing.active_station_direction_slots,
+  );
+
+  return { states, l4Processing };
+}
+
+function logL4Processing(
+  diagnostics: L4ProcessingDiagnostics,
+  feedAgeSeconds: number | null,
+  now: number,
+): void {
+  const event = {
+    event: "tramtrace_l4_processing",
+    feed_age_seconds:
+      feedAgeSeconds === null ? null : Math.max(0, Math.floor(feedAgeSeconds)),
+    ...diagnostics,
+  };
+  const signature = JSON.stringify(diagnostics);
+  if (
+    signature === lastL4DiagnosticsSignature &&
+    now - lastL4DiagnosticsLogAt < 60
+  ) {
+    return;
+  }
+  console.log(JSON.stringify(event));
+  lastL4DiagnosticsSignature = signature;
+  lastL4DiagnosticsLogAt = now;
 }
 
 function jsonResponse(payload: unknown, status = 200): Response {
@@ -854,6 +1047,19 @@ export async function tramtracePayload(
     return jsonResponse({ error: "realtime_feed_unavailable" }, 503);
   }
 
+  const stateResult = calculateStateResult(
+    freshParts,
+    TRANSIT.index,
+    settings,
+    now,
+  );
+  const l4Part = freshParts.find((part) => part.spec.name === "parramatta");
+  logL4Processing(
+    stateResult.l4Processing,
+    l4Part ? partAge(l4Part, now) : null,
+    now,
+  );
+
   return jsonResponse({
     schema: 1,
     timestamp: Math.floor(now),
@@ -862,7 +1068,7 @@ export async function tramtracePayload(
     ),
     brightness: settings.brightness,
     poll_seconds: settings.pollSeconds,
-    states: calculateStates(freshParts, TRANSIT.index, settings, now),
+    states: stateResult.states,
   });
 }
 
@@ -923,6 +1129,16 @@ export function tramtraceHealth(env: WorkerEnv): Response {
     allFeedsFresh &&
     allSchedulesAvailable;
   const cachedParts = cachedSnapshot.parts;
+  const freshParts = cachedParts.filter((part) => {
+    const sourceAge = now - (part.headerTimestamp || part.receivedAt);
+    return (
+      sourceAge <= settings.maxFeedAgeSeconds &&
+      sourceAge >= -settings.futureToleranceSeconds
+    );
+  });
+  const l4Processing = TRANSIT.index
+    ? calculateStateResult(freshParts, TRANSIT.index, settings, now).l4Processing
+    : null;
   return jsonResponse(
     {
       ok,
@@ -956,7 +1172,9 @@ export function tramtraceHealth(env: WorkerEnv): Response {
         approaching_metres: settings.approachingMetres,
         far_metres: settings.farMetres,
         l4_reported_far_metres: settings.l4FarMetres,
+        maximum_vehicle_age_seconds: settings.maxVehicleAgeSeconds,
       },
+      l4_processing: l4Processing,
       feeds,
       schedules,
       error: TRANSIT.error,

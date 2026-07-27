@@ -12,6 +12,10 @@ import {
   FeedRefreshCache,
   type FeedRefreshBatch,
 } from "./feed-refresh-cache";
+import {
+  DEFAULT_L4_FAR_METRES,
+  farMetresForCandidate,
+} from "./station-thresholds";
 
 type Route = "L1" | "L2" | "L3" | "L4";
 type SourceName = "innerwest" | "cbdandsoutheast" | "parramatta";
@@ -98,6 +102,7 @@ interface WorkerEnv {
   TRAMTRACE_AT_STATION_METRES?: string;
   TRAMTRACE_APPROACHING_METRES?: string;
   TRAMTRACE_FAR_METRES?: string;
+  TRAMTRACE_L4_FAR_METRES?: string;
   TRAMTRACE_L1_VP_URL?: string;
   TRAMTRACE_L23_VP_URL?: string;
   TRAMTRACE_L4_VP_URL?: string;
@@ -113,6 +118,7 @@ interface RuntimeSettings {
   atStationMetres: number;
   approachingMetres: number;
   farMetres: number;
+  l4FarMetres: number;
 }
 
 const ROUTES: readonly Route[] = ["L1", "L2", "L3", "L4"];
@@ -285,6 +291,15 @@ function runtimeSettings(env: WorkerEnv): RuntimeSettings {
     approachingMetres,
     numberSetting(env.TRAMTRACE_FAR_METRES, 800, 0, 5_000),
   );
+  const l4FarMetres = Math.max(
+    approachingMetres,
+    numberSetting(
+      env.TRAMTRACE_L4_FAR_METRES,
+      DEFAULT_L4_FAR_METRES,
+      0,
+      5_000,
+    ),
+  );
   return {
     brightness: Math.round(
       numberSetting(env.TRAMTRACE_BRIGHTNESS, 24, 0, 64),
@@ -319,6 +334,7 @@ function runtimeSettings(env: WorkerEnv): RuntimeSettings {
     atStationMetres,
     approachingMetres,
     farMetres,
+    l4FarMetres,
   };
 }
 
@@ -626,6 +642,7 @@ function nearestStation(
 }
 
 function vehicleState(
+  route: Route,
   vehicle: VehiclePosition,
   reported: boolean,
   distance: number | null,
@@ -641,7 +658,13 @@ function vehicleState(
     if (distance <= settings.approachingMetres) {
       return 2;
     }
-    if (distance <= settings.farMetres) {
+    const farMetres = farMetresForCandidate(
+      route,
+      reported,
+      settings.farMetres,
+      settings.l4FarMetres,
+    );
+    if (distance <= farMetres) {
       return 1;
     }
     return 0;
@@ -726,7 +749,13 @@ function calculateStates(
         continue;
       }
 
-      const state = vehicleState(vehicle, reported, distance, settings);
+      const state = vehicleState(
+        resolved.route,
+        vehicle,
+        reported,
+        distance,
+        settings,
+      );
       const stationName = routeData.stations[stationIndex]?.[0];
       if (!stationName || !states[resolved.route][stationName]) {
         continue;
@@ -921,6 +950,12 @@ export function tramtraceHealth(env: WorkerEnv): Response {
         ),
         consecutive_all_feed_failures:
           cachedSnapshot.consecutiveAllFailures,
+      },
+      station_thresholds: {
+        at_station_metres: settings.atStationMetres,
+        approaching_metres: settings.approachingMetres,
+        far_metres: settings.farMetres,
+        l4_reported_far_metres: settings.l4FarMetres,
       },
       feeds,
       schedules,

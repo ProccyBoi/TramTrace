@@ -18,6 +18,7 @@ IN_TRANSIT_TO = 2
 DEFAULT_AT_STATION_METRES = 120.0
 DEFAULT_APPROACHING_METRES = 450.0
 DEFAULT_FAR_METRES = 800.0
+DEFAULT_L4_FAR_METRES = 1700.0
 _ROUTE_TOKEN_RE = re.compile(r"(?<![A-Z0-9])L[1-4](?![A-Z0-9])")
 
 
@@ -26,13 +27,19 @@ class StateThresholds:
     at_station_metres: float = DEFAULT_AT_STATION_METRES
     approaching_metres: float = DEFAULT_APPROACHING_METRES
     far_metres: float = DEFAULT_FAR_METRES
+    l4_far_metres: float = DEFAULT_L4_FAR_METRES
 
     def __post_init__(self) -> None:
-        if not (
-            0 <= self.at_station_metres
+        shared_thresholds_are_valid = (
+            0
+            <= self.at_station_metres
             <= self.approaching_metres
             <= self.far_metres
-        ):
+        )
+        l4_threshold_is_valid = (
+            self.approaching_metres <= self.l4_far_metres
+        )
+        if not (shared_thresholds_are_valid and l4_threshold_is_valid):
             raise ValueError("Distance thresholds must be non-negative and increasing")
 
 
@@ -353,7 +360,12 @@ class DirectionalStateEngine:
                 return 3
             if distance <= self.thresholds.approaching_metres:
                 return 2
-            if distance <= self.thresholds.far_metres:
+            far_metres = (
+                self.thresholds.l4_far_metres
+                if observation.route == "L4" and reported_station
+                else self.thresholds.far_metres
+            )
+            if distance <= far_metres:
                 return 1
             return 0
         if reported_station:

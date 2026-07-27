@@ -27,6 +27,7 @@ from .state import (
     DEFAULT_APPROACHING_METRES,
     DEFAULT_AT_STATION_METRES,
     DEFAULT_FAR_METRES,
+    DEFAULT_L4_FAR_METRES,
     DirectionalStateEngine,
     StateThresholds,
     observations_from_snapshot,
@@ -103,6 +104,7 @@ class Settings:
     at_station_metres: float = DEFAULT_AT_STATION_METRES
     approaching_metres: float = DEFAULT_APPROACHING_METRES
     far_metres: float = DEFAULT_FAR_METRES
+    l4_far_metres: float = DEFAULT_L4_FAR_METRES
     feeds: Sequence[FeedSpec] = DEFAULT_FEEDS
     schedules: Sequence[ScheduleSpec] = DEFAULT_SCHEDULES
 
@@ -162,6 +164,12 @@ class Settings:
                 0.0,
                 5000.0,
             ),
+            l4_far_metres=_env_float(
+                "TRAMTRACE_L4_FAR_METRES",
+                DEFAULT_L4_FAR_METRES,
+                0.0,
+                5000.0,
+            ),
             feeds=_feed_specs_from_env(),
             schedules=_schedule_specs_from_env(),
         )
@@ -208,10 +216,12 @@ class TramTraceService:
         at_station = max(0.0, self.settings.at_station_metres)
         approaching = max(at_station, self.settings.approaching_metres)
         far = max(approaching, self.settings.far_metres)
+        l4_far = max(approaching, self.settings.l4_far_metres)
         thresholds = StateThresholds(
             at_station_metres=at_station,
             approaching_metres=approaching,
             far_metres=far,
+            l4_far_metres=l4_far,
         )
         return DirectionalStateEngine(
             static,

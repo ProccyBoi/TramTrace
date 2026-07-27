@@ -29,6 +29,14 @@ test("uses the tightened live-light distance defaults", async () => {
   );
 });
 
+test("uses the L4-specific reported-stop distance default", async () => {
+  const source = await readFile(sourceUrl, "utf8");
+  assert.match(
+    source,
+    /env\.TRAMTRACE_L4_FAR_METRES,\s*DEFAULT_L4_FAR_METRES,\s*0,\s*5_000/,
+  );
+});
+
 test("enforces a 15-second minimum upstream feed refresh", async () => {
   const source = await readFile(sourceUrl, "utf8");
   assert.match(

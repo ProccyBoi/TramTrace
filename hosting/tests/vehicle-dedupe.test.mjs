@@ -133,3 +133,33 @@ test("equal timestamps deterministically prefer the later stop sequence", () => 
   assert.equal(winner.stationName, "Later");
   assert.equal(winner.state, 1);
 });
+
+test("an extended-range L4 vehicle still wins only one station", () => {
+  const oldStation = candidate({
+    identityKeys: ["parramatta:vehicle:lrv-42"],
+    route: "L4",
+    stationIndex: 0,
+    stationName: "Carlingford",
+    distance: 100,
+    state: 3,
+    timestamp: 100,
+    currentStopSequence: 1,
+  });
+  const reportedNextStation = candidate({
+    identityKeys: ["parramatta:vehicle:lrv-42"],
+    route: "L4",
+    stationIndex: 1,
+    stationName: "Telopea",
+    distance: 1_490,
+    state: 1,
+    timestamp: 101,
+    currentStopSequence: 2,
+  });
+
+  const winners = deduplicateVehicleCandidates([
+    oldStation,
+    reportedNextStation,
+  ]);
+  assert.equal(winners.length, 1);
+  assert.equal(winners[0].stationName, "Telopea");
+});

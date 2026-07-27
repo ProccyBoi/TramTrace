@@ -9,6 +9,7 @@ from server.state import (
     DEFAULT_APPROACHING_METRES,
     DEFAULT_AT_STATION_METRES,
     DEFAULT_FAR_METRES,
+    DEFAULT_L4_FAR_METRES,
     INCOMING_AT,
     STOPPED_AT,
     DirectionalStateEngine,
@@ -23,6 +24,7 @@ def test_live_distance_defaults_are_consistent(monkeypatch) -> None:
         "TRAMTRACE_AT_STATION_METRES",
         "TRAMTRACE_APPROACHING_METRES",
         "TRAMTRACE_FAR_METRES",
+        "TRAMTRACE_L4_FAR_METRES",
     ):
         monkeypatch.delenv(name, raising=False)
 
@@ -32,19 +34,97 @@ def test_live_distance_defaults_are_consistent(monkeypatch) -> None:
         DEFAULT_AT_STATION_METRES,
         DEFAULT_APPROACHING_METRES,
         DEFAULT_FAR_METRES,
+        DEFAULT_L4_FAR_METRES,
     )
 
-    assert expected == (120.0, 450.0, 800.0)
+    assert expected == (120.0, 450.0, 800.0, 1700.0)
     assert (
         thresholds.at_station_metres,
         thresholds.approaching_metres,
         thresholds.far_metres,
+        thresholds.l4_far_metres,
     ) == expected
     assert (
         settings.at_station_metres,
         settings.approaching_metres,
         settings.far_metres,
+        settings.l4_far_metres,
     ) == expected
+
+
+def test_l4_extended_range_keeps_only_the_newest_reported_station(
+    static_gtfs: StaticGTFS,
+) -> None:
+    now = 11_000
+    target_latitude, target_longitude = (
+        static_gtfs.station_positions["L4"]["Childrens Hospital"]
+    )
+    result = DirectionalStateEngine(static_gtfs).calculate(
+        [
+            VehicleObservation(
+                route="L4",
+                direction=0,
+                trip_id="l4-0",
+                stop_id="l4-carlingford",
+                current_stop_sequence=1,
+                current_status=STOPPED_AT,
+                latitude=None,
+                longitude=None,
+                timestamp=now - 1,
+                source="parramatta",
+                vehicle_id="lrv-42",
+                entity_id="old-record",
+            ),
+            VehicleObservation(
+                route="L4",
+                direction=0,
+                trip_id="l4-0",
+                stop_id="l4-childrens",
+                current_stop_sequence=2,
+                current_status=INCOMING_AT,
+                latitude=target_latitude + 0.01,
+                longitude=target_longitude,
+                timestamp=now,
+                source="parramatta",
+                vehicle_id="lrv-42",
+                entity_id="new-record",
+            ),
+        ],
+        now=now,
+    )
+
+    assert result.states["L4"]["Carlingford"] == [0, 0]
+    assert result.states["L4"]["Childrens Hospital"] == [1, 0]
+    assert result.accepted_vehicles == 1
+
+
+def test_extended_range_does_not_apply_to_unreported_l4_positions(
+    static_gtfs: StaticGTFS,
+) -> None:
+    now = 12_000
+    target_latitude, target_longitude = (
+        static_gtfs.station_positions["L4"]["Childrens Hospital"]
+    )
+    result = DirectionalStateEngine(static_gtfs).calculate(
+        [
+            VehicleObservation(
+                route="L4",
+                direction=0,
+                trip_id=None,
+                stop_id=None,
+                current_stop_sequence=None,
+                current_status=INCOMING_AT,
+                latitude=target_latitude + 0.01,
+                longitude=target_longitude,
+                timestamp=now,
+                source="parramatta",
+                vehicle_id="lrv-off-route",
+            )
+        ],
+        now=now,
+    )
+
+    assert result.accepted_vehicles == 0
 
 
 def test_shared_l2_l3_trunk_stays_separate(

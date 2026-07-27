@@ -128,6 +128,7 @@ later fetch fails.
 | `TRAMTRACE_AT_STATION_METRES` | `120` | State 3 distance |
 | `TRAMTRACE_APPROACHING_METRES` | `450` | State 2 distance |
 | `TRAMTRACE_FAR_METRES` | `800` | State 1 distance |
+| `TRAMTRACE_L4_FAR_METRES` | `1700` | L4 state 1 distance when TfNSW reports the next stop |
 | `TRAMTRACE_L1_VP_URL` | official L1 URL | L1 feed override |
 | `TRAMTRACE_L23_VP_URL` | official L2/L3 URL | L2/L3 feed override |
 | `TRAMTRACE_L4_VP_URL` | official L4 URL | L4 feed override |

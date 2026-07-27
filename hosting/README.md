@@ -31,6 +31,7 @@ Production values are managed by Sites and are not stored in this repository:
 - `TRAMTRACE_AT_STATION_METRES` (default `120`)
 - `TRAMTRACE_APPROACHING_METRES` (default `450`)
 - `TRAMTRACE_FAR_METRES` (default `800`)
+- `TRAMTRACE_L4_FAR_METRES` (default `1700`; reported next stops only)
 
 ## Static transit index
 

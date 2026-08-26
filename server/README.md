@@ -77,6 +77,13 @@ The backend returns PCB labels, including `Bank Street` for TfNSW's
 Central aliases. L2 and L3 remain separate in JSON even where their physical
 trunk LEDs are shared.
 
+Before station states are emitted, observations are grouped by their
+source-scoped TfNSW tracking-beacon ID and scheduled trip instance. When the
+same vehicle is present in multiple feed records, only the newest deterministic
+station candidate is retained. Distinct vehicles at the same station still
+combine normally, while records without a stable identity are left separate
+rather than guessed.
+
 `GET /healthz` reports token/static readiness plus per-feed and per-schedule
 availability, last-good age, and refresh errors. Responses use
 `Cache-Control: no-store`.
@@ -89,7 +96,11 @@ availability, last-good age, and refresh errors. Responses use
 
 Each feed has an independent last-good cache. A transient failure therefore
 does not blank unrelated routes; cached data naturally turns off once it fails
-the configured feed/vehicle stale guards.
+the configured feed/vehicle stale guards. Empty and total-failure responses are
+also cached, so concurrent callers cannot bypass the upstream interval. Repeated
+total failures use bounded exponential backoff and any successful feed resets
+that backoff. Refresh intervals and backoff are measured from completion of the
+upstream attempt, so slow TfNSW responses do not consume their own cooldown.
 
 ## Operator schedule defaults
 
@@ -108,7 +119,7 @@ later fetch fails.
 | `TRAMTRACE_GTFS_SOURCE` | none | Optional base GTFS directory, ZIP, or URL |
 | `TRAMTRACE_BRIGHTNESS` | `24` | Payload brightness, clamped to `0..64` |
 | `TRAMTRACE_POLL_SECONDS` | `3` | ESP32 polling interval |
-| `TRAMTRACE_FEED_CACHE_SECONDS` | `3` | Minimum live-feed refetch interval |
+| `TRAMTRACE_FEED_CACHE_SECONDS` | `15` | Minimum live-feed refetch interval, clamped to at least 15 seconds |
 | `TRAMTRACE_STATIC_REFRESH_SECONDS` | `21600` | Optional base-GTFS refresh interval |
 | `TRAMTRACE_SCHEDULE_REFRESH_SECONDS` | `21600` | Per-operator schedule refresh interval |
 | `TRAMTRACE_SCHEDULE_RETRY_SECONDS` | `60` | Failed schedule retry interval |
@@ -117,6 +128,7 @@ later fetch fails.
 | `TRAMTRACE_AT_STATION_METRES` | `120` | State 3 distance |
 | `TRAMTRACE_APPROACHING_METRES` | `450` | State 2 distance |
 | `TRAMTRACE_FAR_METRES` | `800` | State 1 distance |
+| `TRAMTRACE_L4_FAR_METRES` | `1700` | L4 state 1 distance when TfNSW reports the next stop |
 | `TRAMTRACE_L1_VP_URL` | official L1 URL | L1 feed override |
 | `TRAMTRACE_L23_VP_URL` | official L2/L3 URL | L2/L3 feed override |
 | `TRAMTRACE_L4_VP_URL` | official L4 URL | L4 feed override |

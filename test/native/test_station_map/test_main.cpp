@@ -23,11 +23,79 @@ void test_hardware_constants_match_schematic() {
   TEST_ASSERT_EQUAL_UINT16(32, kStripLengths[3]);
 }
 
-void test_route_colours_match_current_gtfs() {
-  TEST_ASSERT_EQUAL_HEX32(0xBE1622, kRouteColours[0]);
-  TEST_ASSERT_EQUAL_HEX32(0xDD1E25, kRouteColours[1]);
-  TEST_ASSERT_EQUAL_HEX32(0x781140, kRouteColours[2]);
-  TEST_ASSERT_EQUAL_HEX32(0xBB2043, kRouteColours[3]);
+void test_route_srgb_colours_match_current_gtfs() {
+  TEST_ASSERT_EQUAL_HEX32(0xBE1622, kRouteSrgbColours[0]);
+  TEST_ASSERT_EQUAL_HEX32(0xDD1E25, kRouteSrgbColours[1]);
+  TEST_ASSERT_EQUAL_HEX32(0x781140, kRouteSrgbColours[2]);
+  TEST_ASSERT_EQUAL_HEX32(0xBB2043, kRouteSrgbColours[3]);
+}
+
+void test_route_led_colours_include_physical_diffuser_calibration() {
+  TEST_ASSERT_EQUAL_HEX32(0xBE2000, kRouteLedColours[0]);
+  TEST_ASSERT_EQUAL_HEX32(0xFF0000, kRouteLedColours[1]);
+  TEST_ASSERT_EQUAL_HEX32(0x780000, kRouteLedColours[2]);
+  TEST_ASSERT_EQUAL_HEX32(0xBB1030, kRouteLedColours[3]);
+
+  TEST_ASSERT_EQUAL_HEX32(kRouteLedColours[0], routeColour("L1"));
+  TEST_ASSERT_EQUAL_HEX32(kRouteLedColours[1], routeColour("L2"));
+  TEST_ASSERT_EQUAL_HEX32(kRouteLedColours[2], routeColour("L3"));
+  TEST_ASSERT_EQUAL_HEX32(kRouteLedColours[3], routeColour("L4"));
+}
+
+constexpr uint8_t scaledNeoPixelChannel(uint8_t channel, uint8_t brightness) {
+  return static_cast<uint8_t>(
+      (static_cast<uint16_t>(channel) * (brightness + 1U)) >> 8);
+}
+
+constexpr uint32_t scaledNeoPixelColour(uint32_t colour, uint8_t brightness) {
+  return (static_cast<uint32_t>(scaledNeoPixelChannel(
+              static_cast<uint8_t>(colour >> 16), brightness))
+          << 16) |
+         (static_cast<uint32_t>(scaledNeoPixelChannel(
+              static_cast<uint8_t>(colour >> 8), brightness))
+          << 8) |
+         scaledNeoPixelChannel(static_cast<uint8_t>(colour), brightness);
+}
+
+void test_route_palette_survives_neopixel_brightness_quantisation() {
+  // These are the RGB PWM bytes that actually reach the LEDs after
+  // Adafruit_NeoPixel applies its integer brightness scale. Every route is
+  // distinct even at the former 16/255 simulation brightness.
+  TEST_ASSERT_EQUAL_HEX32(0x0C0200,
+                          scaledNeoPixelColour(kRouteLedColours[0], 16));
+  TEST_ASSERT_EQUAL_HEX32(0x100000,
+                          scaledNeoPixelColour(kRouteLedColours[1], 16));
+  TEST_ASSERT_EQUAL_HEX32(0x070000,
+                          scaledNeoPixelColour(kRouteLedColours[2], 16));
+  TEST_ASSERT_EQUAL_HEX32(0x0C0103,
+                          scaledNeoPixelColour(kRouteLedColours[3], 16));
+
+  TEST_ASSERT_EQUAL_HEX32(0x120300,
+                          scaledNeoPixelColour(kRouteLedColours[0], 24));
+  TEST_ASSERT_EQUAL_HEX32(0x180000,
+                          scaledNeoPixelColour(kRouteLedColours[1], 24));
+  TEST_ASSERT_EQUAL_HEX32(0x0B0000,
+                          scaledNeoPixelColour(kRouteLedColours[2], 24));
+  TEST_ASSERT_EQUAL_HEX32(0x120104,
+                          scaledNeoPixelColour(kRouteLedColours[3], 24));
+
+  TEST_ASSERT_EQUAL_HEX32(0x180400,
+                          scaledNeoPixelColour(kRouteLedColours[0], 32));
+  TEST_ASSERT_EQUAL_HEX32(0x200000,
+                          scaledNeoPixelColour(kRouteLedColours[1], 32));
+  TEST_ASSERT_EQUAL_HEX32(0x0F0000,
+                          scaledNeoPixelColour(kRouteLedColours[2], 32));
+  TEST_ASSERT_EQUAL_HEX32(0x180206,
+                          scaledNeoPixelColour(kRouteLedColours[3], 32));
+
+  TEST_ASSERT_EQUAL_HEX32(0x300800,
+                          scaledNeoPixelColour(kRouteLedColours[0], 64));
+  TEST_ASSERT_EQUAL_HEX32(0x400000,
+                          scaledNeoPixelColour(kRouteLedColours[1], 64));
+  TEST_ASSERT_EQUAL_HEX32(0x1E0000,
+                          scaledNeoPixelColour(kRouteLedColours[2], 64));
+  TEST_ASSERT_EQUAL_HEX32(0x2F040C,
+                          scaledNeoPixelColour(kRouteLedColours[3], 64));
 }
 
 void test_every_active_distance_state_is_solid() {
@@ -119,7 +187,9 @@ void test_ota_versions_are_strict_and_never_roll_back() {
 int main(int, char **) {
   UNITY_BEGIN();
   RUN_TEST(test_hardware_constants_match_schematic);
-  RUN_TEST(test_route_colours_match_current_gtfs);
+  RUN_TEST(test_route_srgb_colours_match_current_gtfs);
+  RUN_TEST(test_route_led_colours_include_physical_diffuser_calibration);
+  RUN_TEST(test_route_palette_survives_neopixel_brightness_quantisation);
   RUN_TEST(test_every_active_distance_state_is_solid);
   RUN_TEST(test_shared_pixel_ties_keep_a_stable_colour);
   RUN_TEST(test_every_binding_is_in_bounds);

@@ -2,6 +2,7 @@
   "name": "tramtrace-live-service",
   "version": "0.1.0",
   "private": true,
+  "packageManager": "pnpm@11.19.0",
   "engines": {
     "node": ">=22.13.0"
   },

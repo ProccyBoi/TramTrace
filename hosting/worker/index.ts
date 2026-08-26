@@ -6,6 +6,7 @@ import {
   tramtracePayload,
   type WorkerEnv,
 } from "./tramtrace";
+import { firmwareBinary, firmwareManifest } from "./firmware-ota";
 
 interface Env extends WorkerEnv {
   ASSETS: {
@@ -47,6 +48,14 @@ const worker = {
         );
       }
       return tramtraceHealth(env);
+    }
+
+    if (url.pathname === "/firmware_manifest") {
+      return firmwareManifest(request);
+    }
+
+    if (url.pathname === "/firmware.bin") {
+      return firmwareBinary(request);
     }
 
     if (url.pathname === "/_vinext/image") {

@@ -27,10 +27,13 @@ from .state import (
     DEFAULT_APPROACHING_METRES,
     DEFAULT_AT_STATION_METRES,
     DEFAULT_FAR_METRES,
+    DEFAULT_L4_FAR_METRES,
     DirectionalStateEngine,
     StateThresholds,
     observations_from_snapshot,
 )
+
+MIN_FEED_CACHE_SECONDS = 15.0
 
 
 def _env_int(name: str, default: int, minimum: int, maximum: int) -> int:
@@ -89,7 +92,7 @@ class Settings:
     gtfs_source: str | None = None
     brightness: int = 24
     poll_seconds: int = 3
-    feed_cache_seconds: float = 3.0
+    feed_cache_seconds: float = MIN_FEED_CACHE_SECONDS
     static_refresh_seconds: float = 21_600.0
     request_timeout_seconds: float = 15.0
     static_timeout_seconds: float = 90.0
@@ -101,6 +104,7 @@ class Settings:
     at_station_metres: float = DEFAULT_AT_STATION_METRES
     approaching_metres: float = DEFAULT_APPROACHING_METRES
     far_metres: float = DEFAULT_FAR_METRES
+    l4_far_metres: float = DEFAULT_L4_FAR_METRES
     feeds: Sequence[FeedSpec] = DEFAULT_FEEDS
     schedules: Sequence[ScheduleSpec] = DEFAULT_SCHEDULES
 
@@ -113,7 +117,10 @@ class Settings:
             brightness=_env_int("TRAMTRACE_BRIGHTNESS", 24, 0, 64),
             poll_seconds=_env_int("TRAMTRACE_POLL_SECONDS", 3, 1, 60),
             feed_cache_seconds=_env_float(
-                "TRAMTRACE_FEED_CACHE_SECONDS", 3.0, 0.0, 60.0
+                "TRAMTRACE_FEED_CACHE_SECONDS",
+                MIN_FEED_CACHE_SECONDS,
+                MIN_FEED_CACHE_SECONDS,
+                60.0,
             ),
             static_refresh_seconds=_env_float(
                 "TRAMTRACE_STATIC_REFRESH_SECONDS", 21_600.0, 60.0, 604_800.0
@@ -157,6 +164,12 @@ class Settings:
                 0.0,
                 5000.0,
             ),
+            l4_far_metres=_env_float(
+                "TRAMTRACE_L4_FAR_METRES",
+                DEFAULT_L4_FAR_METRES,
+                0.0,
+                5000.0,
+            ),
             feeds=_feed_specs_from_env(),
             schedules=_schedule_specs_from_env(),
         )
@@ -178,7 +191,10 @@ class TramTraceService:
             token=settings.api_token,
             feeds=settings.feeds,
             session=self.session,
-            cache_seconds=settings.feed_cache_seconds,
+            cache_seconds=max(
+                MIN_FEED_CACHE_SECONDS,
+                settings.feed_cache_seconds,
+            ),
             timeout_seconds=settings.request_timeout_seconds,
         )
         self.schedule_client = schedules or TfNSWScheduleClient(
@@ -200,10 +216,12 @@ class TramTraceService:
         at_station = max(0.0, self.settings.at_station_metres)
         approaching = max(at_station, self.settings.approaching_metres)
         far = max(approaching, self.settings.far_metres)
+        l4_far = max(approaching, self.settings.l4_far_metres)
         thresholds = StateThresholds(
             at_station_metres=at_station,
             approaching_metres=approaching,
             far_metres=far,
+            l4_far_metres=l4_far,
         )
         return DirectionalStateEngine(
             static,
@@ -299,9 +317,14 @@ class TramTraceService:
             return refreshed
 
     def payload(self, *, now: float | None = None) -> dict[str, object]:
-        timestamp = time.time() if now is None else float(now)
+        use_realtime_clock = now is None
+        timestamp = time.time() if use_realtime_clock else float(now)
         static = self.static_gtfs(now=timestamp)
-        snapshot = self.realtime.snapshot(now=timestamp)
+        snapshot = self.realtime.snapshot(
+            now=None if use_realtime_clock else timestamp
+        )
+        if use_realtime_clock:
+            timestamp = time.time()
         fresh_parts = tuple(
             part
             for part in snapshot.parts

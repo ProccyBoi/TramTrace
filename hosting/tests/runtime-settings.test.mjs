@@ -28,3 +28,31 @@ test("uses the tightened live-light distance defaults", async () => {
     },
   );
 });
+
+test("uses the L4-specific reported-stop distance default", async () => {
+  const source = await readFile(sourceUrl, "utf8");
+  assert.match(
+    source,
+    /env\.TRAMTRACE_L4_FAR_METRES,\s*DEFAULT_L4_FAR_METRES,\s*0,\s*5_000/,
+  );
+});
+
+test("enforces a 15-second minimum upstream feed refresh", async () => {
+  const source = await readFile(sourceUrl, "utf8");
+  assert.match(
+    source,
+    /env\.TRAMTRACE_FEED_CACHE_SECONDS,\s*15,\s*15,\s*60/,
+  );
+});
+
+test("keeps the L4 Trip Update fallback close and quota-conscious", async () => {
+  const source = await readFile(sourceUrl, "utf8");
+  assert.match(
+    source,
+    /env\.TRAMTRACE_L4_TRIP_UPDATE_CACHE_SECONDS,\s*60,\s*60,\s*300/,
+  );
+  assert.match(
+    source,
+    /env\.TRAMTRACE_L4_TRIP_UPDATE_FAR_SECONDS,\s*90,\s*45,\s*180/,
+  );
+});

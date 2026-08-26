@@ -1,0 +1,48 @@
+name: Firmware release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install PlatformIO
+        run: python -m pip install platformio==6.1.19
+      - name: Build firmware
+        run: pio run -e tramtrace
+      - name: Restore signing key
+        env:
+          OTA_SIGNING_KEY_B64: ${{ secrets.OTA_SIGNING_KEY_B64 }}
+        run: |
+          test -n "$OTA_SIGNING_KEY_B64"
+          printf '%s' "$OTA_SIGNING_KEY_B64" | base64 --decode > "$RUNNER_TEMP/ota-signing-key.pem"
+          chmod 600 "$RUNNER_TEMP/ota-signing-key.pem"
+      - name: Create signed release assets
+        run: |
+          python scripts/create_ota_release.py \
+            --firmware .pio/build/tramtrace/firmware.bin \
+            --tag "$GITHUB_REF_NAME" \
+            --signing-key "$RUNNER_TEMP/ota-signing-key.pem" \
+            --output release
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          gh release create "$GITHUB_REF_NAME" \
+            release/manifest.json "release/tramtrace-$version.bin" \
+            --verify-tag \
+            --title "TramTrace firmware $version" \
+            --notes "Signed production firmware for TramTrace ESP32 boards."

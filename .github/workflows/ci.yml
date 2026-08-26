@@ -1,0 +1,36 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install firmware and backend tooling
+        run: python -m pip install platformio==6.1.19 pytest -r server/requirements.txt
+      - name: Test backend and release tooling
+        run: python -m pytest tests -q
+      - name: Test native firmware policy
+        run: pio test -e native
+      - name: Build ESP32 firmware
+        run: pio run -e tramtrace
+      - name: Enable pnpm
+        run: corepack enable
+      - name: Install hosted service dependencies
+        working-directory: hosting
+        run: pnpm install --frozen-lockfile
+      - name: Test hosted service
+        working-directory: hosting
+        run: pnpm test

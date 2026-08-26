@@ -16,6 +16,7 @@
 #include <algorithm>
 #include <cstring>
 
+#include "device_identity.h"
 #include "display_logic.h"
 #include "ota_policy.h"
 #include "ota_public_key.h"
@@ -46,7 +47,7 @@ namespace {
 
 using tramtrace::Strip;
 
-constexpr char kFirmwareVersion[] = "0.3.0";
+constexpr char kFirmwareVersion[] = "0.3.1";
 constexpr char kOtaManifestUrl[] = OTA_MANIFEST_URL;
 constexpr uint8_t kDefaultBrightness = 20;
 constexpr uint8_t kMaximumBrightness = 64;
@@ -435,10 +436,12 @@ String configPageHtml() {
   WiFi.mode(WIFI_AP_STA);
 
   const uint32_t suffix =
-      static_cast<uint32_t>(ESP.getEfuseMac() & 0xFFFFFFULL);
+      tramtrace::setupSuffixFromEfuseMac(ESP.getEfuseMac());
+  char suffixText[7] = {};
+  snprintf(suffixText, sizeof(suffixText), "%06lX",
+           static_cast<unsigned long>(suffix));
   String accessPoint = F("TramTrace-Setup-");
-  accessPoint += String(suffix, HEX);
-  accessPoint.toUpperCase();
+  accessPoint += suffixText;
 
   WiFi.softAP(accessPoint.c_str());
   const IPAddress address = WiFi.softAPIP();

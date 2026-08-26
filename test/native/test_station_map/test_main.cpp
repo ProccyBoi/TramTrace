@@ -3,6 +3,7 @@
 #include <unity.h>
 
 #include "display_logic.h"
+#include "ota_policy.h"
 #include "station_map.h"
 
 using namespace tramtrace;
@@ -99,6 +100,22 @@ void test_l1_central_merges_both_directions_to_single_pixel() {
   TEST_ASSERT_TRUE(found);
 }
 
+void test_ota_versions_are_strict_and_never_roll_back() {
+  FirmwareVersion parsed;
+  TEST_ASSERT_TRUE(parseFirmwareVersion("0.3.0", parsed));
+  TEST_ASSERT_EQUAL_UINT32(0, parsed.major);
+  TEST_ASSERT_EQUAL_UINT32(3, parsed.minor);
+  TEST_ASSERT_EQUAL_UINT32(0, parsed.patch);
+
+  TEST_ASSERT_FALSE(parseFirmwareVersion("v0.3.0", parsed));
+  TEST_ASSERT_FALSE(parseFirmwareVersion("0.3", parsed));
+  TEST_ASSERT_FALSE(parseFirmwareVersion("0.3.0-beta", parsed));
+  TEST_ASSERT_TRUE(firmwareVersionIsNewer("0.3.1", "0.3.0"));
+  TEST_ASSERT_TRUE(firmwareVersionIsNewer("1.0.0", "0.99.99"));
+  TEST_ASSERT_FALSE(firmwareVersionIsNewer("0.3.0", "0.3.0"));
+  TEST_ASSERT_FALSE(firmwareVersionIsNewer("0.2.9", "0.3.0"));
+}
+
 int main(int, char **) {
   UNITY_BEGIN();
   RUN_TEST(test_hardware_constants_match_schematic);
@@ -109,5 +126,6 @@ int main(int, char **) {
   RUN_TEST(test_every_physical_route_pixel_is_bound);
   RUN_TEST(test_l2_shared_trunk_reuses_l3_pixels);
   RUN_TEST(test_l1_central_merges_both_directions_to_single_pixel);
+  RUN_TEST(test_ota_versions_are_strict_and_never_roll_back);
   return UNITY_END();
 }

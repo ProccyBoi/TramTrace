@@ -41,6 +41,10 @@ export default function Home() {
             <span className="label">UPDATE INTERVAL</span>
             <strong>3 seconds</strong>
           </div>
+          <div>
+            <span className="label">FIRMWARE</span>
+            <strong>Signed OTA</strong>
+          </div>
           <a href="/healthz">Service health</a>
         </div>
       </section>

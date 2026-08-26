@@ -31,7 +31,7 @@
     "postcss": "8.5.26",
     "react-server-dom-webpack": "19.2.8",
     "tailwindcss": "4.3.3",
-    "typescript": "5.9.3",
+    "typescript": "6.0.3",
     "vinext": "1.0.0-beta.8",
     "vite": "8.2.2",
     "wrangler": "4.126.0"

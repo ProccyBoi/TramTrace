@@ -9,6 +9,7 @@
 #include <WebServer.h>
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
+#include <esp_ota_ops.h>
 #include <mbedtls/base64.h>
 #include <mbedtls/pk.h>
 #include <mbedtls/sha256.h>
@@ -21,6 +22,16 @@
 #include "ota_policy.h"
 #include "ota_public_key.h"
 #include "station_map.h"
+
+// Arduino-ESP32 otherwise marks a newly installed image valid before setup()
+// runs. TramTrace confirms it only after a signed manifest has been fetched
+// and verified over authenticated HTTPS.
+extern "C" bool verifyRollbackLater() { return true; }
+
+extern const uint8_t x509_crt_bundle_start[]
+    asm("_binary_x509_crt_bundle_start");
+extern const uint8_t x509_crt_bundle_end[]
+    asm("_binary_x509_crt_bundle_end");
 
 #ifndef DEFAULT_WIFI_SSID
 #define DEFAULT_WIFI_SSID ""
@@ -47,7 +58,7 @@ namespace {
 
 using tramtrace::Strip;
 
-constexpr char kFirmwareVersion[] = "0.3.1";
+constexpr char kFirmwareVersion[] = "0.3.2";
 constexpr char kOtaManifestUrl[] = OTA_MANIFEST_URL;
 constexpr uint8_t kDefaultBrightness = 20;
 constexpr uint8_t kMaximumBrightness = 64;
@@ -75,12 +86,14 @@ struct DeviceConfig {
   String ssid;
   String password;
   String apiUrl;
-  String boardId;
+  String boardKey;
   uint8_t brightness = kDefaultBrightness;
 
   bool isValid() const {
-    return !ssid.isEmpty() &&
-           (apiUrl.startsWith("http://") || apiUrl.startsWith("https://"));
+    const bool usesHttps = apiUrl.startsWith("https://");
+    const bool usesUnprotectedHttp =
+        apiUrl.startsWith("http://") && boardKey.isEmpty();
+    return !ssid.isEmpty() && (usesHttps || usesUnprotectedHttp);
   }
 };
 
@@ -147,6 +160,36 @@ String gWifiNetworkOptions;
 String gSerialLine;
 
 void processSerial();
+
+void configureSecureClient(WiFiClientSecure &client, uint32_t timeoutMs) {
+  client.setCACertBundle(
+      x509_crt_bundle_start,
+      static_cast<size_t>(x509_crt_bundle_end - x509_crt_bundle_start));
+  client.setTimeout(timeoutMs);
+  // NetworkClientSecure expresses this timeout in seconds, unlike Stream and
+  // HTTPClient, which use milliseconds.
+  client.setHandshakeTimeout((timeoutMs + 999UL) / 1000UL);
+}
+
+bool confirmRunningOtaImage() {
+  const esp_partition_t *running = esp_ota_get_running_partition();
+  esp_ota_img_states_t state = ESP_OTA_IMG_UNDEFINED;
+  if (esp_ota_get_state_partition(running, &state) != ESP_OK ||
+      state != ESP_OTA_IMG_PENDING_VERIFY) {
+    return true;
+  }
+
+  const esp_err_t result = esp_ota_mark_app_valid_cancel_rollback();
+  if (result != ESP_OK) {
+    Serial.printf("[OTA] Could not confirm the running image: %s.\n",
+                  esp_err_to_name(result));
+    return false;
+  }
+  Serial.println(
+      "[OTA] Running image passed the signed-manifest checkpoint; rollback "
+      "cancelled.");
+  return true;
+}
 
 uint8_t clampBrightness(int value) {
   return static_cast<uint8_t>(
@@ -352,17 +395,25 @@ String urlEncode(const String &input) {
 
 bool loadConfig() {
   gPreferences.begin("tramtrace", true);
-  gConfig.ssid = gPreferences.getString("ssid", gConfig.ssid);
-  gConfig.password = gPreferences.getString("pass", gConfig.password);
-  gConfig.apiUrl = gPreferences.getString("api", gConfig.apiUrl);
-  gConfig.boardId = gPreferences.getString("board", gConfig.boardId);
+  if (gPreferences.isKey("ssid")) {
+    gConfig.ssid = gPreferences.getString("ssid", gConfig.ssid);
+  }
+  if (gPreferences.isKey("pass")) {
+    gConfig.password = gPreferences.getString("pass", gConfig.password);
+  }
+  if (gPreferences.isKey("api")) {
+    gConfig.apiUrl = gPreferences.getString("api", gConfig.apiUrl);
+  }
+  if (gPreferences.isKey("board")) {
+    gConfig.boardKey = gPreferences.getString("board", gConfig.boardKey);
+  }
   gConfig.brightness =
       clampBrightness(gPreferences.getUChar("bright", kDefaultBrightness));
   gPreferences.end();
 
   gConfig.ssid.trim();
   gConfig.apiUrl.trim();
-  gConfig.boardId.trim();
+  gConfig.boardKey.trim();
   gBrightness = gConfig.brightness;
   return gConfig.isValid();
 }
@@ -372,14 +423,14 @@ void saveConfig(const DeviceConfig &config) {
   gPreferences.putString("ssid", config.ssid);
   gPreferences.putString("pass", config.password);
   gPreferences.putString("api", config.apiUrl);
-  gPreferences.putString("board", config.boardId);
+  gPreferences.putString("board", config.boardKey);
   gPreferences.putUChar("bright", config.brightness);
   gPreferences.end();
 }
 
 String configPageHtml() {
   String html;
-  html.reserve(4200);
+  html.reserve(4800);
   html += F(
       "<!doctype html><html><head><meta charset='utf-8'>"
       "<meta name='viewport' content='width=device-width,initial-scale=1'>"
@@ -390,6 +441,7 @@ String configPageHtml() {
       "box-shadow:0 2px 16px #0001}label{display:block;margin:.9rem 0 .3rem}"
       "input{box-sizing:border-box;width:100%;padding:.72rem;border:1px solid "
       "#b8bec8;border-radius:.4rem;font:inherit}"
+      ".check{display:flex;align-items:center;gap:.55rem}.check input{width:auto}"
       "button{margin-top:1.2rem;padding:.8rem 1.1rem;border:0;border-radius:"
       ".4rem;background:#b7192d;color:white;font-weight:700}"
       "small{color:#59616c}</style></head><body><h1>TramTrace setup</h1>"
@@ -402,20 +454,21 @@ String configPageHtml() {
   html += F(
       "</datalist><small>Choose a nearby network or type a hidden one.</small>"
       "<label for='pass'>Wi-Fi password</label>"
-      "<input id='pass' name='pass' type='password' value='");
-  html += htmlEscape(gConfig.password);
-  html += F(
-      "'><label for='api'>API URL</label>"
+      "<input id='pass' name='pass' type='password' autocomplete='new-password'>"
+      "<small>Leave blank to keep the saved password when the SSID is "
+      "unchanged.</small><label for='api'>API URL</label>"
       "<input id='api' name='api' type='url' required placeholder='"
       "https://example.net/tramtrace_payload' value='");
   html += htmlEscape(gConfig.apiUrl);
   html += F(
       "'><small>An API base URL ending in / is also accepted.</small>"
-      "<label for='board'>Board ID (optional)</label>"
-      "<input id='board' name='board' value='");
-  html += htmlEscape(gConfig.boardId);
-  html += F(
-      "'><label for='brightness'>Brightness (1-64)</label>"
+      "<label for='board'>Board access key</label>"
+      "<input id='board' name='board' type='password' autocomplete='off'>"
+      "<small>Required for the hosted TramTrace service and sent only as an "
+      "HTTPS bearer token. Leave blank to keep a saved key.</small>"
+      "<label class='check'><input name='clear_board' type='checkbox' "
+      "value='1'>Remove the saved board access key</label>"
+      "<label for='brightness'>Brightness (1-64)</label>"
       "<input id='brightness' name='brightness' type='number' min='1' max='64'"
       " value='");
   html += String(gConfig.brightness);
@@ -431,8 +484,10 @@ String configPageHtml() {
   // Stop station mode without asking the ESP32 Wi-Fi stack to erase its saved
   // AP record. TramTrace's own configuration remains in its Preferences
   // namespace until an explicit factory-reset command.
-  WiFi.disconnect(true, false);
-  delay(100);
+  if (WiFi.getMode() != WIFI_MODE_NULL) {
+    WiFi.disconnect(true, false);
+    delay(100);
+  }
   WiFi.mode(WIFI_AP_STA);
 
   const uint32_t suffix =
@@ -453,20 +508,32 @@ String configPageHtml() {
   });
   gConfigServer.on("/save", HTTP_POST, []() {
     DeviceConfig next = gConfig;
-    next.ssid = gConfigServer.arg("ssid");
-    next.password = gConfigServer.arg("pass");
+    const String submittedSsid = gConfigServer.arg("ssid");
+    const String submittedPassword = gConfigServer.arg("pass");
+    String submittedBoardKey = gConfigServer.arg("board");
+    submittedBoardKey.trim();
+
+    next.ssid = submittedSsid;
+    if (!submittedPassword.isEmpty() || submittedSsid != gConfig.ssid) {
+      next.password = submittedPassword;
+    }
     next.apiUrl = gConfigServer.arg("api");
-    next.boardId = gConfigServer.arg("board");
+    if (gConfigServer.hasArg("clear_board")) {
+      next.boardKey = "";
+    } else if (!submittedBoardKey.isEmpty()) {
+      next.boardKey = submittedBoardKey;
+    }
     next.brightness =
         clampBrightness(gConfigServer.arg("brightness").toInt());
     next.ssid.trim();
     next.apiUrl.trim();
-    next.boardId.trim();
+    next.boardKey.trim();
 
     if (!next.isValid()) {
       gConfigServer.send(
           400, "text/plain; charset=utf-8",
-          "A Wi-Fi SSID and an http(s) TramTrace API URL are required.");
+          "A Wi-Fi SSID and an http(s) TramTrace API URL are required. "
+          "A board access key may only be used with HTTPS.");
       return;
     }
 
@@ -549,11 +616,6 @@ String payloadUrl() {
     }
   }
 
-  if (!gConfig.boardId.isEmpty()) {
-    url += url.indexOf('?') >= 0 ? '&' : '?';
-    url += F("board_id=");
-    url += urlEncode(gConfig.boardId);
-  }
   return url;
 }
 
@@ -698,11 +760,7 @@ bool performOtaUpdate(const char *firmwareUrl, const char *expectedMd5,
                 targetVersion, expectedSize);
 
   WiFiClientSecure client;
-  // The signed manifest and SHA-256 digest provide authenticity and integrity
-  // even if the hosting certificate chain changes between firmware releases.
-  client.setInsecure();
-  client.setTimeout(kOtaDownloadTimeoutMs);
-  client.setHandshakeTimeout(kOtaDownloadTimeoutMs);
+  configureSecureClient(client, kOtaDownloadTimeoutMs);
 
   HTTPClient http;
   http.setTimeout(kOtaDownloadTimeoutMs);
@@ -831,9 +889,7 @@ bool checkForOtaUpdate() {
   Serial.printf("[OTA] Checking %s.\n", manifestUrl.c_str());
 
   WiFiClientSecure client;
-  client.setInsecure();
-  client.setTimeout(kOtaManifestTimeoutMs);
-  client.setHandshakeTimeout(kOtaManifestTimeoutMs);
+  configureSecureClient(client, kOtaManifestTimeoutMs);
   HTTPClient http;
   http.setTimeout(kOtaManifestTimeoutMs);
   http.setReuse(false);
@@ -885,17 +941,20 @@ bool checkForOtaUpdate() {
     gLastOtaResult = "fail_manifest_signature";
     return false;
   }
+  if (String(firmwareUrl) != expectedFirmwareUrl(version)) {
+    gLastOtaResult = "fail_untrusted_binary_url";
+    return false;
+  }
+  if (!confirmRunningOtaImage()) {
+    gLastOtaResult = "fail_rollback_confirmation";
+    return false;
+  }
   if (!tramtrace::firmwareVersionIsNewer(version, kFirmwareVersion)) {
     gLastOtaResult = "no_update";
     Serial.printf("[OTA] Current=%s latest=%s; no update.\n",
                   kFirmwareVersion, version);
     return false;
   }
-  if (String(firmwareUrl) != expectedFirmwareUrl(version)) {
-    gLastOtaResult = "fail_untrusted_binary_url";
-    return false;
-  }
-
   return performOtaUpdate(firmwareUrl, md5, sha256, size, version);
 }
 
@@ -1032,9 +1091,7 @@ bool fetchPayload() {
   HTTPClient http;
   WiFiClient plainClient;
   WiFiClientSecure secureClient;
-  secureClient.setInsecure();  // Matches Metroboard; see README security note.
-  secureClient.setTimeout(kHttpTimeoutMs);
-  secureClient.setHandshakeTimeout(kHttpTimeoutMs);
+  configureSecureClient(secureClient, kHttpTimeoutMs);
 
   bool began = false;
   if (url.startsWith("https://")) {
@@ -1055,6 +1112,10 @@ bool fetchPayload() {
   http.addHeader("Connection", "close");
   http.addHeader("User-Agent",
                  String(F("ESP32-TramTrace/")) + kFirmwareVersion);
+  if (!gConfig.boardKey.isEmpty()) {
+    http.addHeader("Authorization",
+                   String(F("Bearer ")) + gConfig.boardKey);
+  }
 
   const int responseCode = http.GET();
   if (responseCode != HTTP_CODE_OK) {
@@ -1143,14 +1204,14 @@ void printDeviceInfo() {
                 WiFi.status() == WL_CONNECTED ? "connected" : "offline");
   Serial.printf("API: %s (board authentication %s)\n",
                 gConfig.apiUrl.c_str(),
-                gConfig.boardId.isEmpty() ? "disabled" : "configured");
+                gConfig.boardKey.isEmpty() ? "disabled" : "configured");
   Serial.printf("OTA: %s; last result: %s\n", kOtaManifestUrl,
                 gLastOtaResult.c_str());
   Serial.printf("Bindings: %u; physical route pixels: 115 + status\n",
                 static_cast<unsigned>(tramtrace::kStationBindingCount));
   Serial.println(
       "Commands: info, test, test-pairs, simulate, simulate-loop, stop, map, "
-      "config, ota-check, provision|ssid|password|api|board|brightness, "
+      "config, ota-check, provision|ssid|password|api|access-key|brightness, "
       "factory-reset");
 }
 
@@ -1382,7 +1443,7 @@ bool handleSerialProvision(const String &command) {
   if (separatorCount != 5 || command.indexOf('|', searchFrom) >= 0) {
     Serial.println(
         "[CFG] Provision format: "
-        "provision|ssid|password|api|board|brightness");
+        "provision|ssid|password|api|access-key|brightness");
     return true;
   }
 
@@ -1390,12 +1451,12 @@ bool handleSerialProvision(const String &command) {
   next.ssid = command.substring(separators[0] + 1, separators[1]);
   next.password = command.substring(separators[1] + 1, separators[2]);
   next.apiUrl = command.substring(separators[2] + 1, separators[3]);
-  next.boardId = command.substring(separators[3] + 1, separators[4]);
+  next.boardKey = command.substring(separators[3] + 1, separators[4]);
   next.brightness =
       clampBrightness(command.substring(separators[4] + 1).toInt());
   next.ssid.trim();
   next.apiUrl.trim();
-  next.boardId.trim();
+  next.boardKey.trim();
 
   if (!next.isValid()) {
     Serial.println(

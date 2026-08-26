@@ -19,10 +19,14 @@ still-fresh last-good feeds remain usable.
 
 ## Endpoints
 
-- `GET /tramtrace_payload?board_id=...` returns the firmware payload. The
-  `board_id` must match the hosted `TRAMTRACE_BOARD_KEY` secret.
-- `GET /healthz` reports feed and static-index freshness without exposing
-  credentials.
+- `GET /tramtrace_payload` returns the firmware payload when the request has
+  `Authorization: Bearer <board-access-key>`. The key must match the hosted
+  `TRAMTRACE_BOARD_KEY` secret. Query-key authentication remains only for
+  firmware through 0.3.1 and should not be used by new clients.
+- `GET /healthz` reports deployment readiness without exposing credentials.
+  `ok` covers required configuration and static schedules;
+  `live_data_ready` reports whether that edge isolate already has a fresh
+  realtime cache. The first authenticated payload request warms a cold cache.
 - `GET /firmware_manifest?current=X.Y.Z` returns the latest signed TramTrace
   firmware metadata and whether it is newer than the requesting board.
 - `GET /firmware.bin?version=X.Y.Z` streams only the binary named by the current
@@ -72,5 +76,16 @@ Requires Node.js 22.13 or later and pnpm.
 ```powershell
 pnpm install --frozen-lockfile
 pnpm dev
+pnpm audit --audit-level high
+pnpm lint
 pnpm test
+```
+
+For a direct API smoke test, keep the access key out of the URL:
+
+```powershell
+$headers = @{ Authorization = "Bearer $env:TRAMTRACE_BOARD_KEY" }
+Invoke-RestMethod `
+  -Uri "http://localhost:5173/tramtrace_payload" `
+  -Headers $headers
 ```

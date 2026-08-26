@@ -286,31 +286,40 @@ test("reports the exact L4 processing funnel without another upstream fetch", as
       passThroughOnException() {},
     };
     const payloadResponse = await worker.fetch(
-      new Request(
-        "https://tramtrace.test/tramtrace_payload?board_id=test-board",
-      ),
+      new Request("https://tramtrace.test/tramtrace_payload", {
+        headers: { Authorization: "Bearer test-board" },
+      }),
       env,
       context,
     );
     assert.equal(payloadResponse.status, 200);
     assert.equal(fetchCount, 4);
     const cachedPayloadResponse = await worker.fetch(
-      new Request(
-        "https://tramtrace.test/tramtrace_payload?board_id=test-board",
-      ),
+      new Request("https://tramtrace.test/tramtrace_payload", {
+        headers: { Authorization: "Bearer test-board" },
+      }),
       env,
       context,
     );
     assert.equal(cachedPayloadResponse.status, 200);
     assert.equal(fetchCount, 4);
     const unauthorizedCachedResponse = await worker.fetch(
-      new Request(
-        "https://tramtrace.test/tramtrace_payload?board_id=wrong-board",
-      ),
+      new Request("https://tramtrace.test/tramtrace_payload", {
+        headers: { Authorization: "Bearer wrong-board" },
+      }),
       env,
       context,
     );
     assert.equal(unauthorizedCachedResponse.status, 401);
+    assert.equal(fetchCount, 4);
+    const legacyCachedResponse = await worker.fetch(
+      new Request(
+        "https://tramtrace.test/tramtrace_payload?board_id=test-board",
+      ),
+      env,
+      context,
+    );
+    assert.equal(legacyCachedResponse.status, 200);
     assert.equal(fetchCount, 4);
 
     const diagnosticLog = logs.find((line) =>
@@ -483,10 +492,11 @@ test("uses one close Trip Update stop when the matching L4 position is stale", a
       waitUntil() {},
       passThroughOnException() {},
     };
-    const requestUrl =
-      "https://fallback.test/tramtrace_payload?board_id=fallback-board";
+    const requestUrl = "https://fallback.test/tramtrace_payload";
     const response = await worker.fetch(
-      new Request(requestUrl),
+      new Request(requestUrl, {
+        headers: { Authorization: "Bearer fallback-board" },
+      }),
       env,
       context,
     );
@@ -524,7 +534,9 @@ test("uses one close Trip Update stop when the matching L4 position is stale", a
     assert.equal(diagnostic.active_station_direction_slots, 1);
 
     const cachedResponse = await worker.fetch(
-      new Request(requestUrl),
+      new Request(requestUrl, {
+        headers: { Authorization: "Bearer fallback-board" },
+      }),
       env,
       context,
     );
@@ -651,9 +663,9 @@ test("fresh dark L4 positions retain authority over Trip Updates", async () => {
       passThroughOnException() {},
     };
     const response = await worker.fetch(
-      new Request(
-        "https://suppression.test/tramtrace_payload?board_id=suppression-board",
-      ),
+      new Request("https://suppression.test/tramtrace_payload", {
+        headers: { Authorization: "Bearer suppression-board" },
+      }),
       env,
       context,
     );

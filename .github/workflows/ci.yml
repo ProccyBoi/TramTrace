@@ -8,16 +8,25 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: "3.12"
           cache: pip
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: "22.22.0"
       - name: Install firmware and backend tooling
         run: python -m pip install platformio==6.1.19 pytest -r server/requirements.txt
       - name: Test backend and release tooling
@@ -31,6 +40,12 @@ jobs:
       - name: Install hosted service dependencies
         working-directory: hosting
         run: pnpm install --frozen-lockfile
+      - name: Audit hosted service dependencies
+        working-directory: hosting
+        run: pnpm audit --audit-level high
+      - name: Lint hosted service
+        working-directory: hosting
+        run: pnpm lint
       - name: Test hosted service
         working-directory: hosting
         run: pnpm test

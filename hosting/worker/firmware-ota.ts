@@ -103,7 +103,7 @@ function jsonResponse(payload: unknown, status = 200): Response {
   return Response.json(payload, {
     status,
     headers: {
-      "Cache-Control": "public, max-age=300",
+      "Cache-Control": status === 200 ? "public, max-age=300" : "no-store",
       "Content-Type": "application/json; charset=utf-8",
       "X-Content-Type-Options": "nosniff",
     },

@@ -5,14 +5,20 @@
 #include <DNSServer.h>
 #include <HTTPClient.h>
 #include <Preferences.h>
+#include <Update.h>
 #include <WebServer.h>
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
+#include <mbedtls/base64.h>
+#include <mbedtls/pk.h>
+#include <mbedtls/sha256.h>
 
 #include <algorithm>
 #include <cstring>
 
 #include "display_logic.h"
+#include "ota_policy.h"
+#include "ota_public_key.h"
 #include "station_map.h"
 
 #ifndef DEFAULT_WIFI_SSID
@@ -31,26 +37,38 @@
 #define DEFAULT_BOARD_ID ""
 #endif
 
+#ifndef OTA_MANIFEST_URL
+#define OTA_MANIFEST_URL                                                    \
+  "https://tramtrace-sydney-live.chatgptbolt.chatgpt.site/firmware_manifest"
+#endif
+
 namespace {
 
 using tramtrace::Strip;
 
-constexpr char kFirmwareVersion[] = "0.2.5";
+constexpr char kFirmwareVersion[] = "0.3.0";
+constexpr char kOtaManifestUrl[] = OTA_MANIFEST_URL;
 constexpr uint8_t kDefaultBrightness = 20;
 constexpr uint8_t kMaximumBrightness = 64;
 constexpr uint8_t kStatusBrightness = 12;
 constexpr uint8_t kSimulationBrightness = 40;
-constexpr uint8_t kBrightnessTestMultiplier = 2;
 constexpr uint32_t kDefaultPollMs = 3000;
 constexpr uint32_t kMinimumPollMs = 1000;
 constexpr uint32_t kMaximumPollMs = 10000;
 constexpr uint32_t kHttpTimeoutMs = 12000;
+constexpr uint32_t kOtaManifestTimeoutMs = 20000;
+constexpr uint32_t kOtaDownloadTimeoutMs = 30000;
+constexpr uint32_t kOtaStartupDelayMs = 60000;
+constexpr uint32_t kOtaCheckIntervalMs = 6UL * 60UL * 60UL * 1000UL;
+constexpr uint32_t kOtaRetryIntervalMs = 15UL * 60UL * 1000UL;
 constexpr uint32_t kWifiStartupTimeoutMs = 30000;
 constexpr uint32_t kWifiRetryIntervalMs = 10000;
 constexpr uint32_t kClearAfterFailureMs = 60000;
 constexpr uint32_t kRenderIntervalMs = 50;
 constexpr uint32_t kMaximumAcceptedFeedAgeSec = 120;
 constexpr size_t kJsonCapacity = 32768;
+constexpr size_t kOtaManifestJsonCapacity = 3072;
+constexpr size_t kOtaSignatureBufferSize = 96;
 
 struct DeviceConfig {
   String ssid;
@@ -83,6 +101,7 @@ enum class StatusCode : uint8_t {
   WifiError,
   ApiError,
   Testing,
+  OtaUpdating,
 };
 
 Preferences gPreferences;
@@ -107,7 +126,7 @@ Adafruit_NeoPixel gStatusStrip(1, tramtrace::kStatusPin,
 PixelValue gPixels[4][tramtrace::kMaximumStripLength] = {};
 CandidatePixel gCandidate[4][tramtrace::kMaximumStripLength] = {};
 
-uint8_t gBrightness = kDefaultBrightness * kBrightnessTestMultiplier;
+uint8_t gBrightness = kDefaultBrightness;
 uint32_t gPollMs = kDefaultPollMs;
 uint32_t gLastPollAttemptMs = 0;
 uint32_t gLastGoodPayloadMs = 0;
@@ -118,6 +137,12 @@ bool gFrameIsClear = true;
 bool gInSetupPortal = false;
 bool gSimulationRunning = false;
 bool gSimulationStopRequested = false;
+bool gOtaCheckHasRun = false;
+bool gOtaInProgress = false;
+uint32_t gLastOtaCheckMs = 0;
+uint32_t gOtaRetryMs = kOtaCheckIntervalMs;
+String gLastOtaResult = "not_checked";
+String gWifiNetworkOptions;
 String gSerialLine;
 
 void processSerial();
@@ -125,11 +150,6 @@ void processSerial();
 uint8_t clampBrightness(int value) {
   return static_cast<uint8_t>(
       std::max(1, std::min<int>(value, kMaximumBrightness)));
-}
-
-uint8_t testRouteBrightness(int requestedBrightness) {
-  const int requested = clampBrightness(requestedBrightness);
-  return clampBrightness(requested * kBrightnessTestMultiplier);
 }
 
 uint8_t clampState(int value) {
@@ -164,6 +184,9 @@ void setStatus(StatusCode code) {
       break;
     case StatusCode::Testing:
       colour = rgb(150, 40, 220);
+      break;
+    case StatusCode::OtaUpdating:
+      colour = rgb(220, 180, 0);
       break;
   }
 
@@ -275,6 +298,38 @@ String htmlEscape(const String &input) {
   return output;
 }
 
+void scanWifiNetworks() {
+  gWifiNetworkOptions = "";
+  String seen = "\n";
+  const int count = WiFi.scanNetworks(false, true);
+  if (count <= 0) {
+    Serial.println("[SETUP] No nearby Wi-Fi networks found; manual entry remains available.");
+    WiFi.scanDelete();
+    return;
+  }
+
+  for (int index = 0; index < count; ++index) {
+    const String ssid = WiFi.SSID(index);
+    String marker = "\n";
+    marker += ssid;
+    marker += '\n';
+    if (ssid.isEmpty() || seen.indexOf(marker) >= 0) {
+      continue;
+    }
+    seen += ssid;
+    seen += '\n';
+    gWifiNetworkOptions += F("<option value='");
+    gWifiNetworkOptions += htmlEscape(ssid);
+    gWifiNetworkOptions += F("' label='");
+    gWifiNetworkOptions += String(WiFi.RSSI(index));
+    gWifiNetworkOptions += WiFi.encryptionType(index) == WIFI_AUTH_OPEN
+                               ? F(" dBm, open'>")
+                               : F(" dBm, secured'>");
+  }
+  Serial.printf("[SETUP] Found %d nearby Wi-Fi networks.\n", count);
+  WiFi.scanDelete();
+}
+
 String urlEncode(const String &input) {
   String output;
   char encoded[4] = {};
@@ -307,7 +362,7 @@ bool loadConfig() {
   gConfig.ssid.trim();
   gConfig.apiUrl.trim();
   gConfig.boardId.trim();
-  gBrightness = testRouteBrightness(gConfig.brightness);
+  gBrightness = gConfig.brightness;
   return gConfig.isValid();
 }
 
@@ -339,10 +394,13 @@ String configPageHtml() {
       "small{color:#59616c}</style></head><body><h1>TramTrace setup</h1>"
       "<p>Enter Wi-Fi and the direction-aware TramTrace API endpoint.</p>"
       "<form method='post' action='/save'><label for='ssid'>Wi-Fi SSID</label>"
-      "<input id='ssid' name='ssid' required value='");
+      "<input id='ssid' name='ssid' list='wifi-networks' required value='");
   html += htmlEscape(gConfig.ssid);
+  html += F("'><datalist id='wifi-networks'>");
+  html += gWifiNetworkOptions;
   html += F(
-      "'><label for='pass'>Wi-Fi password</label>"
+      "</datalist><small>Choose a nearby network or type a hidden one.</small>"
+      "<label for='pass'>Wi-Fi password</label>"
       "<input id='pass' name='pass' type='password' value='");
   html += htmlEscape(gConfig.password);
   html += F(
@@ -374,7 +432,7 @@ String configPageHtml() {
   // namespace until an explicit factory-reset command.
   WiFi.disconnect(true, false);
   delay(100);
-  WiFi.mode(WIFI_AP);
+  WiFi.mode(WIFI_AP_STA);
 
   const uint32_t suffix =
       static_cast<uint32_t>(ESP.getEfuseMac() & 0xFFFFFFULL);
@@ -384,6 +442,7 @@ String configPageHtml() {
 
   WiFi.softAP(accessPoint.c_str());
   const IPAddress address = WiFi.softAPIP();
+  scanWifiNetworks();
   gDnsServer.start(53, "*", address);
 
   gConfigServer.on("/", HTTP_GET, []() {
@@ -493,6 +552,370 @@ String payloadUrl() {
     url += urlEncode(gConfig.boardId);
   }
   return url;
+}
+
+bool isHexDigest(const char *value, size_t expectedLength) {
+  if (value == nullptr || strlen(value) != expectedLength) {
+    return false;
+  }
+  for (size_t index = 0; index < expectedLength; ++index) {
+    const char current = value[index];
+    if (!((current >= '0' && current <= '9') ||
+          (current >= 'a' && current <= 'f'))) {
+      return false;
+    }
+  }
+  return true;
+}
+
+String bytesToHex(const uint8_t *bytes, size_t length) {
+  constexpr char kHex[] = "0123456789abcdef";
+  String output;
+  output.reserve(length * 2);
+  for (size_t index = 0; index < length; ++index) {
+    output += kHex[(bytes[index] >> 4) & 0x0F];
+    output += kHex[bytes[index] & 0x0F];
+  }
+  return output;
+}
+
+bool constantTimeEquals(const String &actual, const char *expected) {
+  if (expected == nullptr) {
+    return false;
+  }
+  const size_t expectedLength = strlen(expected);
+  const size_t actualLength = static_cast<size_t>(actual.length());
+  const size_t length = std::max(actualLength, expectedLength);
+  uint8_t difference =
+      static_cast<uint8_t>(actualLength ^ expectedLength);
+  for (size_t index = 0; index < length; ++index) {
+    const uint8_t left =
+        index < actualLength ? static_cast<uint8_t>(actual[index]) : 0;
+    const uint8_t right =
+        index < expectedLength ? static_cast<uint8_t>(expected[index]) : 0;
+    difference |= left ^ right;
+  }
+  return difference == 0;
+}
+
+String signedManifestPayload(const char *version, int size,
+                             const char *sha256) {
+  String payload = F("tramtrace-ota-v1\n");
+  payload += version;
+  payload += '\n';
+  payload += String(size);
+  payload += '\n';
+  payload += sha256;
+  payload += '\n';
+  return payload;
+}
+
+bool verifyManifestSignature(const char *version, int size,
+                             const char *sha256,
+                             const char *signatureBase64) {
+  if (signatureBase64 == nullptr || *signatureBase64 == '\0') {
+    return false;
+  }
+
+  uint8_t signature[kOtaSignatureBufferSize] = {};
+  size_t signatureLength = 0;
+  const int decodeResult = mbedtls_base64_decode(
+      signature, sizeof(signature), &signatureLength,
+      reinterpret_cast<const unsigned char *>(signatureBase64),
+      strlen(signatureBase64));
+  if (decodeResult != 0 || signatureLength == 0) {
+    Serial.printf("[OTA] Signature base64 decode failed: -0x%04x.\n",
+                  -decodeResult);
+    return false;
+  }
+
+  const String payload = signedManifestPayload(version, size, sha256);
+  uint8_t digest[32] = {};
+  if (mbedtls_sha256(
+          reinterpret_cast<const unsigned char *>(payload.c_str()),
+          payload.length(), digest, 0) != 0) {
+    Serial.println("[OTA] Could not hash signed manifest fields.");
+    return false;
+  }
+
+  mbedtls_pk_context publicKey;
+  mbedtls_pk_init(&publicKey);
+  const int parseResult = mbedtls_pk_parse_public_key(
+      &publicKey,
+      reinterpret_cast<const unsigned char *>(tramtrace::kOtaSigningPublicKey),
+      strlen(tramtrace::kOtaSigningPublicKey) + 1);
+  if (parseResult != 0) {
+    Serial.printf("[OTA] Public key parse failed: -0x%04x.\n", -parseResult);
+    mbedtls_pk_free(&publicKey);
+    return false;
+  }
+
+  const int verifyResult =
+      mbedtls_pk_verify(&publicKey, MBEDTLS_MD_SHA256, digest, sizeof(digest),
+                        signature, signatureLength);
+  mbedtls_pk_free(&publicKey);
+  if (verifyResult != 0) {
+    Serial.printf("[OTA] Manifest signature verification failed: -0x%04x.\n",
+                  -verifyResult);
+    return false;
+  }
+  return true;
+}
+
+String expectedFirmwareUrl(const char *version) {
+  String url = kOtaManifestUrl;
+  const int slash = url.lastIndexOf('/');
+  if (slash >= 0) {
+    url.remove(slash);
+  }
+  url += F("/firmware.bin?version=");
+  url += urlEncode(version);
+  return url;
+}
+
+void finishOtaAttempt(const String &result) {
+  gLastOtaResult = result;
+  gOtaInProgress = false;
+  setStatus(WiFi.status() == WL_CONNECTED ? StatusCode::Live
+                                          : StatusCode::WifiError);
+}
+
+bool performOtaUpdate(const char *firmwareUrl, const char *expectedMd5,
+                      const char *expectedSha256, int expectedSize,
+                      const char *targetVersion) {
+  if (WiFi.status() != WL_CONNECTED) {
+    finishOtaAttempt("fail_wifi");
+    return false;
+  }
+
+  gOtaInProgress = true;
+  gLastOtaResult = "in_progress";
+  setStatus(StatusCode::OtaUpdating);
+  Serial.printf("[OTA] Downloading signed firmware %s (%d bytes).\n",
+                targetVersion, expectedSize);
+
+  WiFiClientSecure client;
+  // The signed manifest and SHA-256 digest provide authenticity and integrity
+  // even if the hosting certificate chain changes between firmware releases.
+  client.setInsecure();
+  client.setTimeout(kOtaDownloadTimeoutMs);
+  client.setHandshakeTimeout(kOtaDownloadTimeoutMs);
+
+  HTTPClient http;
+  http.setTimeout(kOtaDownloadTimeoutMs);
+  http.setReuse(false);
+  bool updateStarted = false;
+  const auto fail = [&](const String &result) {
+    if (updateStarted) {
+      Update.abort();
+    }
+    http.end();
+    Serial.printf("[OTA] Update failed: %s.\n", result.c_str());
+    finishOtaAttempt(result);
+    return false;
+  };
+
+  if (!http.begin(client, firmwareUrl)) {
+    return fail("fail_binary_begin");
+  }
+  http.addHeader("Accept", "application/octet-stream");
+  http.addHeader("Accept-Encoding", "identity");
+  http.addHeader("Cache-Control", "no-cache");
+  http.addHeader("Connection", "close");
+  http.addHeader("User-Agent",
+                 String(F("ESP32-TramTrace-OTA/")) + kFirmwareVersion);
+
+  const int responseCode = http.GET();
+  if (responseCode != HTTP_CODE_OK) {
+    return fail(String("fail_binary_http_") + responseCode);
+  }
+  const int contentLength = http.getSize();
+  if (contentLength > 0 && contentLength != expectedSize) {
+    return fail("fail_binary_size_mismatch");
+  }
+  if (expectedSize <= 0 ||
+      static_cast<uint32_t>(expectedSize) > ESP.getFreeSketchSpace()) {
+    return fail("fail_binary_too_large");
+  }
+
+  if (!Update.begin(static_cast<size_t>(expectedSize))) {
+    return fail(String("fail_update_begin_") + Update.getError());
+  }
+  updateStarted = true;
+  if (!Update.setMD5(expectedMd5)) {
+    return fail("fail_md5_setup");
+  }
+
+  mbedtls_sha256_context sha256Context;
+  mbedtls_sha256_init(&sha256Context);
+  if (mbedtls_sha256_starts(&sha256Context, 0) != 0) {
+    mbedtls_sha256_free(&sha256Context);
+    return fail("fail_sha256_setup");
+  }
+
+  WiFiClient *stream = http.getStreamPtr();
+  uint8_t buffer[1024] = {};
+  size_t written = 0;
+  uint32_t lastDataAt = millis();
+  while (written < static_cast<size_t>(expectedSize)) {
+    const int available = stream->available();
+    if (available <= 0) {
+      if (millis() - lastDataAt > kOtaDownloadTimeoutMs) {
+        mbedtls_sha256_free(&sha256Context);
+        return fail("fail_download_stalled");
+      }
+      delay(1);
+      continue;
+    }
+
+    const size_t remaining = static_cast<size_t>(expectedSize) - written;
+    const size_t toRead =
+        std::min(remaining, std::min(static_cast<size_t>(available),
+                                    sizeof(buffer)));
+    const int received = stream->readBytes(buffer, toRead);
+    if (received <= 0) {
+      delay(1);
+      continue;
+    }
+    lastDataAt = millis();
+    if (mbedtls_sha256_update(&sha256Context, buffer,
+                              static_cast<size_t>(received)) != 0) {
+      mbedtls_sha256_free(&sha256Context);
+      return fail("fail_sha256_update");
+    }
+    const size_t chunkWritten =
+        Update.write(buffer, static_cast<size_t>(received));
+    if (chunkWritten != static_cast<size_t>(received)) {
+      mbedtls_sha256_free(&sha256Context);
+      return fail("fail_short_write");
+    }
+    written += chunkWritten;
+    delay(1);
+  }
+
+  uint8_t digest[32] = {};
+  const int digestResult = mbedtls_sha256_finish(&sha256Context, digest);
+  mbedtls_sha256_free(&sha256Context);
+  if (digestResult != 0 ||
+      !constantTimeEquals(bytesToHex(digest, sizeof(digest)), expectedSha256)) {
+    return fail("fail_sha256_mismatch");
+  }
+  if (!Update.end()) {
+    updateStarted = false;
+    return fail(String("fail_update_end_") + Update.getError());
+  }
+  updateStarted = false;
+  if (!Update.isFinished()) {
+    return fail("fail_update_incomplete");
+  }
+
+  http.end();
+  gLastOtaResult = "success_rebooting";
+  Serial.println("[OTA] Signed update installed; restarting.");
+  delay(500);
+  ESP.restart();
+  return true;
+}
+
+bool checkForOtaUpdate() {
+  if (gOtaInProgress || WiFi.status() != WL_CONNECTED) {
+    return false;
+  }
+
+  String manifestUrl = kOtaManifestUrl;
+  manifestUrl += F("?current=");
+  manifestUrl += urlEncode(kFirmwareVersion);
+  Serial.printf("[OTA] Checking %s.\n", manifestUrl.c_str());
+
+  WiFiClientSecure client;
+  client.setInsecure();
+  client.setTimeout(kOtaManifestTimeoutMs);
+  client.setHandshakeTimeout(kOtaManifestTimeoutMs);
+  HTTPClient http;
+  http.setTimeout(kOtaManifestTimeoutMs);
+  http.setReuse(false);
+  if (!http.begin(client, manifestUrl)) {
+    gLastOtaResult = "fail_manifest_begin";
+    return false;
+  }
+  http.addHeader("Accept", "application/json");
+  http.addHeader("Accept-Encoding", "identity");
+  http.addHeader("Cache-Control", "no-cache");
+  http.addHeader("Connection", "close");
+  http.addHeader("User-Agent",
+                 String(F("ESP32-TramTrace-OTA/")) + kFirmwareVersion);
+
+  const int responseCode = http.GET();
+  if (responseCode != HTTP_CODE_OK) {
+    gLastOtaResult = String("fail_manifest_http_") + responseCode;
+    http.end();
+    return false;
+  }
+  StaticJsonDocument<kOtaManifestJsonCapacity> manifest;
+  const DeserializationError jsonError =
+      deserializeJson(manifest, http.getStream());
+  http.end();
+  if (jsonError) {
+    gLastOtaResult = "fail_manifest_json";
+    return false;
+  }
+
+  const int schema = manifest["schema"] | 0;
+  const char *product = manifest["product"] | "";
+  const char *algorithm = manifest["signature_algorithm"] | "";
+  const char *signingKey = manifest["signing_key"] | "";
+  const char *version = manifest["version"] | "";
+  const char *firmwareUrl = manifest["url"] | "";
+  const char *md5 = manifest["md5"] | "";
+  const char *sha256 = manifest["sha256"] | "";
+  const char *signature = manifest["signature"] | "";
+  const int size = manifest["size"] | 0;
+
+  if (schema != 1 || strcmp(product, "tramtrace-esp32") != 0 ||
+      strcmp(algorithm, "ecdsa-p256-sha256") != 0 ||
+      strcmp(signingKey, "tramtrace-ota-2026-01") != 0 ||
+      !isHexDigest(md5, 32) || !isHexDigest(sha256, 64) || size <= 0) {
+    gLastOtaResult = "fail_manifest_fields";
+    return false;
+  }
+  if (!verifyManifestSignature(version, size, sha256, signature)) {
+    gLastOtaResult = "fail_manifest_signature";
+    return false;
+  }
+  if (!tramtrace::firmwareVersionIsNewer(version, kFirmwareVersion)) {
+    gLastOtaResult = "no_update";
+    Serial.printf("[OTA] Current=%s latest=%s; no update.\n",
+                  kFirmwareVersion, version);
+    return false;
+  }
+  if (String(firmwareUrl) != expectedFirmwareUrl(version)) {
+    gLastOtaResult = "fail_untrusted_binary_url";
+    return false;
+  }
+
+  return performOtaUpdate(firmwareUrl, md5, sha256, size, version);
+}
+
+void maybeCheckForOtaUpdate() {
+  if (gOtaInProgress || gSimulationRunning ||
+      WiFi.status() != WL_CONNECTED) {
+    return;
+  }
+  const uint32_t now = millis();
+  if (!gOtaCheckHasRun) {
+    if (now < kOtaStartupDelayMs) {
+      return;
+    }
+  } else if (now - gLastOtaCheckMs < gOtaRetryMs) {
+    return;
+  }
+
+  gOtaCheckHasRun = true;
+  gLastOtaCheckMs = now;
+  checkForOtaUpdate();
+  gOtaRetryMs = gLastOtaResult.startsWith("fail_")
+                    ? kOtaRetryIntervalMs
+                    : kOtaCheckIntervalMs;
 }
 
 void clearCandidateFrame() {
@@ -669,9 +1092,9 @@ bool fetchPayload() {
   }
 
   if (document["brightness"].is<int>()) {
-    gBrightness = testRouteBrightness(document["brightness"].as<int>());
+    gBrightness = clampBrightness(document["brightness"].as<int>());
   } else {
-    gBrightness = testRouteBrightness(gConfig.brightness);
+    gBrightness = gConfig.brightness;
   }
 
   if (document["poll_seconds"].is<float>() ||
@@ -718,11 +1141,14 @@ void printDeviceInfo() {
   Serial.printf("API: %s (board authentication %s)\n",
                 gConfig.apiUrl.c_str(),
                 gConfig.boardId.isEmpty() ? "disabled" : "configured");
+  Serial.printf("OTA: %s; last result: %s\n", kOtaManifestUrl,
+                gLastOtaResult.c_str());
   Serial.printf("Bindings: %u; physical route pixels: 115 + status\n",
                 static_cast<unsigned>(tramtrace::kStationBindingCount));
   Serial.println(
       "Commands: info, test, test-pairs, simulate, simulate-loop, stop, map, "
-      "config, provision|ssid|password|api|board|brightness, factory-reset");
+      "config, ota-check, provision|ssid|password|api|board|brightness, "
+      "factory-reset");
 }
 
 struct SimulationRoute {
@@ -1023,6 +1449,17 @@ void handleSerialCommand(String command) {
     Serial.println("[SIM] Replay mode is not running.");
   } else if (command == "map") {
     printMap();
+  } else if (command == "ota-check") {
+    if (WiFi.status() != WL_CONNECTED) {
+      Serial.println("[OTA] Wi-Fi must be connected before a manual check.");
+    } else {
+      gOtaCheckHasRun = true;
+      gLastOtaCheckMs = millis();
+      checkForOtaUpdate();
+      gOtaRetryMs = gLastOtaResult.startsWith("fail_")
+                        ? kOtaRetryIntervalMs
+                        : kOtaCheckIntervalMs;
+    }
   } else if (command == "config") {
     if (gInSetupPortal) {
       Serial.println("[CFG] Setup portal is already active.");
@@ -1104,7 +1541,7 @@ void setup() {
     startConfigPortal();
   }
 
-  gBrightness = testRouteBrightness(gConfig.brightness);
+  gBrightness = gConfig.brightness;
   for (auto &strip : gStrips) {
     strip.setBrightness(gBrightness);
   }
@@ -1138,6 +1575,7 @@ void loop() {
     setStatus(StatusCode::WifiError);
   }
 
+  maybeCheckForOtaUpdate();
   renderFrame();
   delay(2);
 }

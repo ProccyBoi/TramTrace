@@ -23,7 +23,15 @@ still-fresh last-good feeds remain usable.
   `board_id` must match the hosted `TRAMTRACE_BOARD_KEY` secret.
 - `GET /healthz` reports feed and static-index freshness without exposing
   credentials.
+- `GET /firmware_manifest?current=X.Y.Z` returns the latest signed TramTrace
+  firmware metadata and whether it is newer than the requesting board.
+- `GET /firmware.bin?version=X.Y.Z` streams only the binary named by the current
+  validated GitHub Release manifest, with immutable cache headers.
 - `GET /` renders a small public service page.
+
+OTA metadata and binaries are public by design, contain no credentials, and
+are validated against the exact `ProccyBoi/TramTrace` GitHub Release URL shape.
+The ESP32 independently verifies the manifest signature and binary digest.
 
 ## Runtime configuration
 

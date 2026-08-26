@@ -24,6 +24,8 @@ board's KiCad schematic and PCB layout.
 - `src/main.cpp` — ESP32 firmware, setup portal, live polling and LED effects.
 - `include/station_map.h` — compiled GPIO, strip and direction-to-pixel map.
 - `include/display_logic.h` — solid/off display and shared-route priority.
+- `include/ota_policy.h` and `include/ota_public_key.h` — strict version and
+  signed-release verification policy.
 - `hardware/STATION_MAPPING.csv` — schematic/layout cross-reference including
   every LED reference and current TfNSW parent stop ID.
 - `hardware/README.md` — electrical chains and layout exceptions.
@@ -32,7 +34,8 @@ board's KiCad schematic and PCB layout.
 
 - `hosting/` contains the permanent Sites Worker deployment and status page.
 - `scripts/generate_worker_transit_data.py` builds its token-free compact
-  schedule index from the official operator bundles.
+  schedule index from the official operator bundles. GitHub Actions runs the
+  complete test/build matrix and publishes signed firmware release assets.
 
 ## Important PCB exceptions
 
@@ -52,34 +55,36 @@ first-boot test lights one pixel at a time.
 
 ## Build and upload
 
-The checked-in PlatformIO environment targets the connected ESP32 on `COM9`.
-Change `upload_port` and `monitor_port` in `platformio.ini` if Windows assigns a
-different port.
+The PlatformIO platform and toolchain are pinned so local and GitHub builds use
+the same ESP32 Arduino release. The 16 MB partition table provides two 6.4 MB
+application slots for rollback-safe OTA.
 
 ```powershell
 platformio test -e native
 platformio run -e tramtrace
 powershell -NoProfile -ExecutionPolicy Bypass -File `
-  .\scripts\upload_firmware_only.ps1
+  .\scripts\flash_connected_boards.ps1 -Ports COM9,COM20
 platformio device monitor -b 115200 -p COM9
 ```
 
-The routine uploader writes only the `app0` image at `0x10000`. It does not
-write or erase the NVS configuration partition at `0x9000..0xDFFF`. Use
-PlatformIO's full `-t upload` target only when intentionally changing the
-bootloader or partition table.
+The uploader validates that each selected port is a CH340 device, writes the
+bootloader, OTA partition table and initial app image, and does not erase the
+NVS configuration partition at `0x9000..0xDFFF`. To upload one board, run
+`scripts/upload_firmware_only.ps1 -Port COM9`.
 
 On its first TramTrace boot the board runs a low-brightness, one-pixel chase,
 then opens an access point named `TramTrace-Setup-XXXXXX`. Join it and open
 `http://192.168.4.1/` to enter:
 
-1. Wi-Fi name and password.
+1. A nearby Wi-Fi network from the scan list (or a manually typed hidden SSID)
+   and its password.
 2. The public backend URL, either its base URL or the full
    `/tramtrace_payload` URL.
 3. An optional board ID and a brightness from 1 to 64.
 
 Useful 115200-baud serial commands are `info`, `test`, `test-pairs`,
-`simulate`, `simulate-loop`, `stop`, `map`, `config`, and `factory-reset`.
+`simulate`, `simulate-loop`, `stop`, `map`, `config`, `ota-check`, and
+`factory-reset`.
 They remain available while the setup portal is open. `test-pairs` is the
 final assembled-board check: for each printed station it lights slot 0 and
 then slot 1.
@@ -111,13 +116,34 @@ four closely related official reds otherwise collapse to the same integer PWM
 values at normal brightness. L3 remains blue-free because blue made it look
 pink through the physical optics. A shared L2/L3 trunk pixel uses the stronger
 state; an equal-state tie keeps one deterministic colour instead of blinking
-or blending. Firmware 0.2.5 temporarily doubles the requested route brightness
-(20 becomes 40, capped at 64) for an assembled-board visual test; the separate
-status LED remains at 12. Live frames no longer retain a missing pixel for an
-extra poll, preventing a moving vehicle from appearing at both its old and new
-stations. The live service also deduplicates TfNSW records by tracking-beacon
-and trip-instance identity before emitting station states. The default
-activation bands are 120 m, 450 m, and 800 m.
+or blending. Firmware 0.3.0 applies the selected brightness directly; the
+separate status LED remains at 12. Live frames no longer retain a missing pixel
+for an extra poll, preventing a moving vehicle from appearing at both its old
+and new stations. The live service also deduplicates TfNSW records by
+tracking-beacon and trip-instance identity before emitting station states. The
+default activation bands are 120 m, 450 m, and 800 m.
+
+## Signed over-the-air updates
+
+Firmware 0.3.0 checks the public TramTrace Sites service after 60 seconds, then
+every six hours. A failed check retries after 15 minutes. The board requests
+`/firmware_manifest`, and the service resolves the latest immutable GitHub
+Release before streaming `/firmware.bin`. `ota-check` triggers the same flow
+immediately over serial.
+
+Every release is authenticated twice before boot:
+
+1. The board verifies an ECDSA P-256 signature over the version, byte size and
+   SHA-256 digest using the public key compiled into the firmware.
+2. While writing the inactive OTA slot it verifies both SHA-256 and the ESP32
+   updater's MD5 check, then reboots only after the image finishes cleanly.
+
+The signing key is stored only in the `OTA_SIGNING_KEY_B64` GitHub Actions
+secret. To publish a later release, change `kFirmwareVersion` to a strict
+`X.Y.Z` version, merge a green pull request, and push the matching `vX.Y.Z`
+tag. The release workflow rejects a tag/version mismatch and publishes
+`manifest.json` plus `tramtrace-X.Y.Z.bin`. Never commit the private signing
+key or reuse a firmware version.
 
 ## Run the backend
 
@@ -157,8 +183,10 @@ The ESP32 payload route requires its private board key, while `/healthz` and
 the status page expose no credentials. The TfNSW token is stored only as a
 hosted runtime secret.
 
-The Worker fetches all three light-rail feeds concurrently and serves the same
-68-station, two-direction schema as the Python backend. Refresh
+The Worker fetches all three light-rail feeds concurrently, serves the same
+68-station, two-direction schema as the Python backend, and exposes the public
+signed OTA manifest/binary proxy without exposing TfNSW or board credentials.
+Refresh
 `hosting/worker/generated-transit-data.json` when TfNSW changes its schedule
 identifiers:
 
@@ -170,12 +198,15 @@ python scripts/generate_worker_transit_data.py
 ## Verification
 
 ```powershell
-python -m pytest tests/server tests/hardware -q
+python -m pytest tests -q
 platformio test -e native
 platformio run -e tramtrace
+cd hosting
+pnpm test
 ```
 
-The firmware currently uses TLS without certificate verification, matching the
-Metroboard reference. Keep TfNSW credentials only on the backend, use HTTPS,
-and place the backend behind a trusted reverse proxy before exposing it
-publicly.
+The ESP32 network client does not pin a certificate chain because the hosted
+chain can rotate. OTA authenticity does not depend on TLS: the immutable
+release digest is signed and verified on-device. The live payload still relies
+on HTTPS transport, so keep TfNSW credentials only on the backend and never put
+service secrets in firmware or the public repository.

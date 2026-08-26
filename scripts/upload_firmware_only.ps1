@@ -7,54 +7,26 @@ $ErrorActionPreference = "Stop"
 
 $projectRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $platformio = Join-Path $env:USERPROFILE ".platformio\penv\Scripts\platformio.exe"
-$python = Join-Path $env:USERPROFILE ".platformio\penv\Scripts\python.exe"
-$esptool = Join-Path $env:USERPROFILE ".platformio\packages\tool-esptoolpy\esptool.py"
-$firmware = Join-Path $projectRoot ".pio\build\tramtrace\firmware.bin"
-
-foreach ($tool in @($platformio, $python, $esptool)) {
-    if (-not (Test-Path -LiteralPath $tool -PathType Leaf)) {
-        throw "Required upload tool not found: $tool"
+if (-not (Test-Path -LiteralPath $platformio -PathType Leaf)) {
+    $platformioCommand = Get-Command pio -ErrorAction SilentlyContinue
+    if (-not $platformioCommand) {
+        throw "PlatformIO is required to upload TramTrace firmware."
     }
+    $platformio = $platformioCommand.Source
 }
 
 Push-Location $projectRoot
 try {
-    & $platformio run -e tramtrace
-    if ($LASTEXITCODE -ne 0) {
-        throw "TramTrace firmware build failed with exit code $LASTEXITCODE."
-    }
-
-    if (-not (Test-Path -LiteralPath $firmware -PathType Leaf)) {
-        throw "Built firmware image not found: $firmware"
-    }
-
-    $appPartitionSize = 0x640000
-    $firmwareSize = (Get-Item -LiteralPath $firmware).Length
-    if ($firmwareSize -gt $appPartitionSize) {
-        throw (
-            "Firmware image is $firmwareSize bytes, larger than the " +
-            "$appPartitionSize-byte app0 partition."
-        )
-    }
-
     Write-Host (
-        "Uploading application only at 0x10000; " +
-        "NVS 0x9000..0xDFFF will not be written or erased."
+        "Uploading bootloader, OTA partition table and app0 to $Port; " +
+        "the NVS configuration partition at 0x9000..0xDFFF is preserved."
     )
-    & $python $esptool `
-        --chip esp32 `
-        --port $Port `
-        --baud 460800 `
-        --before default_reset `
-        --after hard_reset `
-        write_flash `
-        --verify `
-        0x10000 $firmware
+    & $platformio run -e tramtrace -t upload --upload-port $Port
     if ($LASTEXITCODE -ne 0) {
-        throw "Application-only upload failed with exit code $LASTEXITCODE."
+        throw "TramTrace upload failed with exit code $LASTEXITCODE."
     }
 } finally {
     Pop-Location
 }
 
-Write-Host "Application-only upload complete; the uploader did not touch NVS."
+Write-Host "Upload complete; saved TramTrace Wi-Fi settings were not erased."

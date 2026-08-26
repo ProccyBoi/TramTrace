@@ -35,5 +35,9 @@ test("server-renders the TramTrace status page", async () => {
   assert.match(html, /Kingsford Line/);
   assert.match(html, /Westmead &amp; Carlingford Line/);
   assert.match(html, /href="\/healthz"/);
+  assert.match(html, /property="og:title" content="TramTrace"/);
+  assert.match(html, /property="og:description" content="Sydney light rail, live on your wall\."/);
+  assert.match(html, /property="og:image" content="https:\/\/tramtrace-sydney-live\.chatgptbolt\.chatgpt\.site\/og\.png"/);
+  assert.match(html, /name="twitter:card" content="summary_large_image"/);
   assert.doesNotMatch(html, /TFNSW_API_TOKEN|TRAMTRACE_BOARD_KEY/);
 });

@@ -2,6 +2,7 @@
 
 #include <unity.h>
 
+#include "device_identity.h"
 #include "display_logic.h"
 #include "ota_policy.h"
 #include "station_map.h"
@@ -184,6 +185,15 @@ void test_ota_versions_are_strict_and_never_roll_back() {
   TEST_ASSERT_FALSE(firmwareVersionIsNewer("0.2.9", "0.3.0"));
 }
 
+void test_setup_suffix_uses_device_specific_mac_bytes() {
+  TEST_ASSERT_EQUAL_HEX32(
+      0x04D7F5,
+      setupSuffixFromEfuseMac(0x04D7F5ABC31CULL));
+  TEST_ASSERT_EQUAL_HEX32(
+      0x3812B9,
+      setupSuffixFromEfuseMac(0x3812B9ABC31CULL));
+}
+
 int main(int, char **) {
   UNITY_BEGIN();
   RUN_TEST(test_hardware_constants_match_schematic);
@@ -197,5 +207,6 @@ int main(int, char **) {
   RUN_TEST(test_l2_shared_trunk_reuses_l3_pixels);
   RUN_TEST(test_l1_central_merges_both_directions_to_single_pixel);
   RUN_TEST(test_ota_versions_are_strict_and_never_roll_back);
+  RUN_TEST(test_setup_suffix_uses_device_specific_mac_bytes);
   return UNITY_END();
 }

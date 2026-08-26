@@ -116,7 +116,7 @@ four closely related official reds otherwise collapse to the same integer PWM
 values at normal brightness. L3 remains blue-free because blue made it look
 pink through the physical optics. A shared L2/L3 trunk pixel uses the stronger
 state; an equal-state tie keeps one deterministic colour instead of blinking
-or blending. Firmware 0.3.0 applies the selected brightness directly; the
+or blending. Firmware 0.3.1 applies the selected brightness directly; the
 separate status LED remains at 12. Live frames no longer retain a missing pixel
 for an extra poll, preventing a moving vehicle from appearing at both its old
 and new stations. The live service also deduplicates TfNSW records by
@@ -125,7 +125,7 @@ default activation bands are 120 m, 450 m, and 800 m.
 
 ## Signed over-the-air updates
 
-Firmware 0.3.0 checks the public TramTrace Sites service after 60 seconds, then
+Firmware 0.3.1 checks the public TramTrace Sites service after 60 seconds, then
 every six hours. A failed check retries after 15 minutes. The board requests
 `/firmware_manifest`, and the service resolves the latest immutable GitHub
 Release before streaming `/firmware.bin`. `ota-check` triggers the same flow

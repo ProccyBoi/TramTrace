@@ -4,6 +4,8 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+$env:PYTHONUTF8 = "1"
+[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 
 $projectRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $platformio = Join-Path $env:USERPROFILE ".platformio\penv\Scripts\platformio.exe"

@@ -27,7 +27,7 @@ payload and hardware map built specifically for TramTrace.
 - Signed ECDSA P-256 OTA releases, SHA-256 binary verification and delayed
   rollback confirmation.
 - Native firmware-policy tests, backend tests, hosted-service tests, dependency
-  auditing and reproducible CI builds.
+  auditing and pinned CI builds.
 
 ```mermaid
 flowchart LR

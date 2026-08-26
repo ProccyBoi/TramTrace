@@ -1,6 +1,13 @@
 packages:
   - "."
 
+overrides:
+  "@babel/core@<=7.29.0": 7.29.7
+  "brace-expansion@<2.0.0": 1.1.18
+  "brace-expansion@>=3.0.0 <5.0.9": 5.0.9
+  "fast-uri@<3.1.5": 3.1.5
+  "js-yaml@<4.3.1": 4.3.1
+
 allowBuilds:
   esbuild: true
   sharp: true

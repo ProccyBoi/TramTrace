@@ -5,6 +5,16 @@ param(
 
 $ErrorActionPreference = "Stop"
 $uploader = Join-Path $PSScriptRoot "upload_firmware_only.ps1"
+$Ports = @(
+    $Ports |
+        ForEach-Object { $_ -split ',' } |
+        ForEach-Object { $_.Trim() } |
+        Where-Object { $_ }
+)
+
+if ($Ports.Count -eq 0) {
+    throw "At least one serial port is required."
+}
 
 foreach ($port in $Ports) {
     if ($port -notmatch '^COM\d+$') {

@@ -1561,6 +1561,18 @@ function constantTimeEqual(actual: string, expected: string): boolean {
   return difference === 0;
 }
 
+function boardAccessKey(request: Request): string {
+  const authorization = request.headers.get("Authorization");
+  if (authorization !== null) {
+    const match = /^Bearer ([^\s]+)$/.exec(authorization);
+    return match?.[1] || "";
+  }
+
+  // Compatibility for firmware through 0.3.1. New firmware never places the
+  // access key in a URL because query strings can be retained in access logs.
+  return new URL(request.url).searchParams.get("board_id") || "";
+}
+
 export async function tramtracePayload(
   request: Request,
   env: WorkerEnv,
@@ -1572,7 +1584,7 @@ export async function tramtracePayload(
   if (!expectedBoardKey) {
     return jsonResponse({ error: "service_not_configured" }, 503);
   }
-  const boardKey = new URL(request.url).searchParams.get("board_id") || "";
+  const boardKey = boardAccessKey(request);
   if (!constantTimeEqual(boardKey, expectedBoardKey)) {
     return jsonResponse({ error: "unauthorized" }, 401);
   }
@@ -1721,11 +1733,10 @@ export function tramtraceHealth(env: WorkerEnv): Response {
   const allSchedulesAvailable = SOURCES.every(
     (source) => schedules[source].available,
   );
-  const ok =
-    tokenConfigured &&
-    staticLoaded &&
-    allFeedsFresh &&
-    allSchedulesAvailable;
+  // A fresh Worker isolate has no feed cache until the first authenticated
+  // payload request. Health therefore reports deployment readiness separately
+  // from the optional realtime-cache snapshot.
+  const ok = tokenConfigured && staticLoaded && allSchedulesAvailable;
   const cachedParts = cachedSnapshot.parts;
   const freshParts = cachedParts.filter((part) => {
     const sourceAge = now - (part.headerTimestamp || part.receivedAt);
@@ -1761,6 +1772,7 @@ export function tramtraceHealth(env: WorkerEnv): Response {
   return jsonResponse(
     {
       ok,
+      live_data_ready: allFeedsFresh,
       token_configured: tokenConfigured,
       static_loaded: staticLoaded,
       static_age:

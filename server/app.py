@@ -31,9 +31,9 @@ def create_app(service: TramTraceService | None = None) -> FastAPI:
     def tramtrace_payload() -> JSONResponse:
         try:
             return _no_store(backend.payload())
-        except MissingTokenError as exc:
+        except MissingTokenError:
             return _no_store(
-                {"error": "missing_tfnsw_api_token", "detail": str(exc)},
+                {"error": "missing_tfnsw_api_token"},
                 status_code=503,
             )
         except StaticGTFSLoadError:

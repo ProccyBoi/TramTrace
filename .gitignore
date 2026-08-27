@@ -1,4 +1,7 @@
 .pio/
+# pioarduino 55.x generates this ESP-IDF compatibility manifest for Arduino
+# builds even though TramTrace does not use the ESP-IDF component manager.
+src/idf_component.yml
 .pytest_cache/
 __pycache__/
 *.py[cod]

@@ -28,6 +28,11 @@
 // and verified over authenticated HTTPS.
 extern "C" bool verifyRollbackLater() { return true; }
 
+// TLS certificate-chain verification can exceed Arduino-ESP32's default 8 KiB
+// loop-task stack. Keep enough headroom for the signed OTA manifest and binary
+// handshakes without weakening certificate validation.
+SET_LOOP_TASK_STACK_SIZE(24576);
+
 extern const uint8_t x509_crt_bundle_start[]
     asm("_binary_x509_crt_bundle_start");
 extern const uint8_t x509_crt_bundle_end[]
@@ -58,7 +63,7 @@ namespace {
 
 using tramtrace::Strip;
 
-constexpr char kFirmwareVersion[] = "0.3.2";
+constexpr char kFirmwareVersion[] = "0.3.3";
 constexpr char kOtaManifestUrl[] = OTA_MANIFEST_URL;
 constexpr uint8_t kDefaultBrightness = 20;
 constexpr uint8_t kMaximumBrightness = 64;
@@ -79,8 +84,95 @@ constexpr uint32_t kClearAfterFailureMs = 60000;
 constexpr uint32_t kRenderIntervalMs = 50;
 constexpr uint32_t kMaximumAcceptedFeedAgeSec = 120;
 constexpr size_t kJsonCapacity = 32768;
+constexpr size_t kMaximumPayloadBytes = 64 * 1024;
 constexpr size_t kOtaManifestJsonCapacity = 3072;
+constexpr size_t kOtaManifestMaximumBytes = 8 * 1024;
 constexpr size_t kOtaSignatureBufferSize = 96;
+
+class BoundedStringStream final : public Stream {
+ public:
+  explicit BoundedStringStream(size_t maximumBytes)
+      : maximumBytes_(maximumBytes) {
+    data_.reserve(std::min(maximumBytes_, static_cast<size_t>(4096)));
+  }
+
+  size_t write(uint8_t value) override { return write(&value, 1); }
+
+  size_t write(const uint8_t *buffer, size_t size) override {
+    if (buffer == nullptr || size > maximumBytes_ - data_.length()) {
+      overflowed_ = true;
+      return 0;
+    }
+    if (!data_.concat(reinterpret_cast<const char *>(buffer), size)) {
+      allocationFailed_ = true;
+      return 0;
+    }
+    return size;
+  }
+
+  int available() override { return 0; }
+  int read() override { return -1; }
+  int peek() override { return -1; }
+
+  const String &data() const { return data_; }
+  bool overflowed() const { return overflowed_; }
+  bool allocationFailed() const { return allocationFailed_; }
+
+ private:
+  String data_;
+  size_t maximumBytes_;
+  bool overflowed_ = false;
+  bool allocationFailed_ = false;
+};
+
+class FirmwareUpdateStream final : public Stream {
+ public:
+  FirmwareUpdateStream(size_t expectedBytes,
+                       mbedtls_sha256_context &sha256Context)
+      : expectedBytes_(expectedBytes), sha256Context_(sha256Context) {}
+
+  size_t write(uint8_t value) override { return write(&value, 1); }
+
+  size_t write(const uint8_t *buffer, size_t size) override {
+    if (failed_ || buffer == nullptr ||
+        size > expectedBytes_ - writtenBytes_) {
+      failed_ = true;
+      return 0;
+    }
+    if (mbedtls_sha256_update(&sha256Context_, buffer, size) != 0) {
+      hashFailed_ = true;
+      failed_ = true;
+      return 0;
+    }
+    // Arduino-ESP32's Update API does not mutate this buffer but its legacy
+    // signature still accepts a non-const pointer.
+    const size_t written =
+        Update.write(const_cast<uint8_t *>(buffer), size);
+    writtenBytes_ += written;
+    if (written != size) {
+      updateFailed_ = true;
+      failed_ = true;
+    }
+    return written;
+  }
+
+  int available() override { return 0; }
+  int read() override { return -1; }
+  int peek() override { return -1; }
+
+  size_t writtenBytes() const { return writtenBytes_; }
+  bool hashFailed() const { return hashFailed_; }
+  bool updateFailed() const { return updateFailed_; }
+  bool failed() const { return failed_; }
+
+ private:
+  size_t expectedBytes_;
+  mbedtls_sha256_context &sha256Context_;
+  size_t writtenBytes_ = 0;
+  bool hashFailed_ = false;
+  bool updateFailed_ = false;
+  bool failed_ = false;
+};
 
 struct DeviceConfig {
   String ssid;
@@ -814,44 +906,27 @@ bool performOtaUpdate(const char *firmwareUrl, const char *expectedMd5,
     return fail("fail_sha256_setup");
   }
 
-  WiFiClient *stream = http.getStreamPtr();
-  uint8_t buffer[1024] = {};
-  size_t written = 0;
-  uint32_t lastDataAt = millis();
-  while (written < static_cast<size_t>(expectedSize)) {
-    const int available = stream->available();
-    if (available <= 0) {
-      if (millis() - lastDataAt > kOtaDownloadTimeoutMs) {
-        mbedtls_sha256_free(&sha256Context);
-        return fail("fail_download_stalled");
-      }
-      delay(1);
-      continue;
-    }
-
-    const size_t remaining = static_cast<size_t>(expectedSize) - written;
-    const size_t toRead =
-        std::min(remaining, std::min(static_cast<size_t>(available),
-                                    sizeof(buffer)));
-    const int received = stream->readBytes(buffer, toRead);
-    if (received <= 0) {
-      delay(1);
-      continue;
-    }
-    lastDataAt = millis();
-    if (mbedtls_sha256_update(&sha256Context, buffer,
-                              static_cast<size_t>(received)) != 0) {
-      mbedtls_sha256_free(&sha256Context);
-      return fail("fail_sha256_update");
-    }
-    const size_t chunkWritten =
-        Update.write(buffer, static_cast<size_t>(received));
-    if (chunkWritten != static_cast<size_t>(received)) {
-      mbedtls_sha256_free(&sha256Context);
-      return fail("fail_short_write");
-    }
-    written += chunkWritten;
-    delay(1);
+  // Decode HTTP chunk framing before hashing or writing. This keeps the bytes
+  // authenticated by SHA-256 identical to the bytes stored in the OTA slot.
+  FirmwareUpdateStream firmwareStream(static_cast<size_t>(expectedSize),
+                                      sha256Context);
+  const int downloadResult = http.writeToStream(&firmwareStream);
+  if (firmwareStream.hashFailed()) {
+    mbedtls_sha256_free(&sha256Context);
+    return fail("fail_sha256_update");
+  }
+  if (firmwareStream.updateFailed()) {
+    mbedtls_sha256_free(&sha256Context);
+    return fail("fail_short_write");
+  }
+  if (firmwareStream.failed() || downloadResult < 0) {
+    mbedtls_sha256_free(&sha256Context);
+    return fail(String("fail_download_stream_") + downloadResult);
+  }
+  if (firmwareStream.writtenBytes() != static_cast<size_t>(expectedSize) ||
+      downloadResult != expectedSize) {
+    mbedtls_sha256_free(&sha256Context);
+    return fail("fail_binary_size_mismatch");
   }
 
   uint8_t digest[32] = {};
@@ -908,14 +983,35 @@ bool checkForOtaUpdate() {
   if (responseCode != HTTP_CODE_OK) {
     gLastOtaResult = String("fail_manifest_http_") + responseCode;
     http.end();
+    Serial.printf("[OTA] Manifest HTTP request failed: %d.\n", responseCode);
+    return false;
+  }
+  BoundedStringStream manifestPayload(kOtaManifestMaximumBytes);
+  const int manifestBytes = http.writeToStream(&manifestPayload);
+  http.end();
+  if (manifestPayload.overflowed()) {
+    gLastOtaResult = "fail_manifest_too_large";
+    Serial.println("[OTA] Manifest exceeded the payload size limit.");
+    return false;
+  }
+  if (manifestPayload.allocationFailed()) {
+    gLastOtaResult = "fail_manifest_allocation";
+    Serial.println("[OTA] Could not allocate the manifest buffer.");
+    return false;
+  }
+  if (manifestBytes <= 0) {
+    gLastOtaResult = String("fail_manifest_read_") + manifestBytes;
+    Serial.printf("[OTA] Manifest read failed: %s (%d).\n",
+                  HTTPClient::errorToString(manifestBytes).c_str(),
+                  manifestBytes);
     return false;
   }
   StaticJsonDocument<kOtaManifestJsonCapacity> manifest;
   const DeserializationError jsonError =
-      deserializeJson(manifest, http.getStream());
-  http.end();
+      deserializeJson(manifest, manifestPayload.data());
   if (jsonError) {
     gLastOtaResult = "fail_manifest_json";
+    Serial.printf("[OTA] Manifest JSON error: %s.\n", jsonError.c_str());
     return false;
   }
 
@@ -1124,10 +1220,30 @@ bool fetchPayload() {
     return false;
   }
 
+  // HTTPClient's raw stream does not decode HTTP/1.1 chunk framing. Buffering
+  // through writeToStream both decodes chunked responses and proves the entire
+  // bounded body arrived before ArduinoJson sees it.
+  BoundedStringStream payload(kMaximumPayloadBytes);
+  const int payloadBytes = http.writeToStream(&payload);
+  http.end();
+  if (payload.overflowed()) {
+    Serial.println("[API] Response exceeded the payload size limit.");
+    return false;
+  }
+  if (payload.allocationFailed()) {
+    Serial.println("[API] Could not allocate the response buffer.");
+    return false;
+  }
+  if (payloadBytes <= 0) {
+    Serial.printf("[API] Response read failed: %s (%d).\n",
+                  HTTPClient::errorToString(payloadBytes).c_str(),
+                  payloadBytes);
+    return false;
+  }
+
   DynamicJsonDocument document(kJsonCapacity);
   const DeserializationError error =
-      deserializeJson(document, http.getStream());
-  http.end();
+      deserializeJson(document, payload.data());
   if (error) {
     Serial.printf("[API] JSON error: %s\n", error.c_str());
     return false;
@@ -1211,8 +1327,8 @@ void printDeviceInfo() {
                 static_cast<unsigned>(tramtrace::kStationBindingCount));
   Serial.println(
       "Commands: info, test, test-pairs, simulate, simulate-loop, stop, map, "
-      "config, ota-check, provision|ssid|password|api|access-key|brightness, "
-      "factory-reset");
+      "config, ota-check, access-key|new-key, "
+      "provision|ssid|password|api|access-key|brightness, factory-reset");
 }
 
 struct SimulationRoute {
@@ -1425,6 +1541,25 @@ bool handleSerialProvision(const String &command) {
   }
   String verb = command.substring(0, firstSeparator);
   verb.toLowerCase();
+  if (verb == "access-key") {
+    String accessKey = command.substring(firstSeparator + 1);
+    accessKey.trim();
+    if (accessKey.isEmpty()) {
+      Serial.println("[CFG] Access-key format: access-key|new-key");
+      return true;
+    }
+    if (!gConfig.apiUrl.startsWith("https://")) {
+      Serial.println("[CFG] A board access key requires an HTTPS API URL.");
+      return true;
+    }
+    gConfig.boardKey = accessKey;
+    saveConfig(gConfig);
+    saveSimulationLoopEnabled(false);
+    Serial.println("[CFG] Board access key saved; restarting.");
+    delay(300);
+    ESP.restart();
+    return true;
+  }
   if (verb != "provision") {
     return false;
   }

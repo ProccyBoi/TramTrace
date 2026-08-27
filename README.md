@@ -138,9 +138,16 @@ USB provisioning is also available:
 provision|ssid|password|https://backend.example|board-access-key|20
 ```
 
+To rotate only the hosted-service key while preserving the saved Wi-Fi and API
+settings, use:
+
+```text
+access-key|new-board-access-key
+```
+
 The serial console runs at 115200 baud. Available commands are `info`, `test`,
 `test-pairs`, `simulate`, `simulate-loop`, `stop`, `map`, `config`,
-`ota-check`, `provision|...` and `factory-reset`.
+`ota-check`, `access-key|...`, `provision|...` and `factory-reset`.
 
 ## Live display behavior
 

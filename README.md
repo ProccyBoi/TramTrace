@@ -3,6 +3,7 @@
 [![CI](https://github.com/ProccyBoi/TramTrace/actions/workflows/ci.yml/badge.svg)](https://github.com/ProccyBoi/TramTrace/actions/workflows/ci.yml)
 [![Latest release](https://img.shields.io/github/v/release/ProccyBoi/TramTrace)](https://github.com/ProccyBoi/TramTrace/releases/latest)
 [![Live service](https://img.shields.io/website?url=https%3A%2F%2Ftramtrace-sydney-live.chatgptbolt.chatgpt.site%2Fhealthz&label=live%20service)](https://tramtrace-sydney-live.chatgptbolt.chatgpt.site/healthz)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
 TramTrace turns a custom ESP32/WS2812 PCB into a live, direction-aware map of
 Sydney's L1, L2, L3 and L4 light-rail services. This repository contains the
@@ -242,7 +243,7 @@ firmware, signs the manifest and publishes immutable assets to GitHub Releases.
 Report vulnerabilities privately as described in [SECURITY.md](SECURITY.md).
 Contribution requirements are in [CONTRIBUTING.md](CONTRIBUTING.md).
 
-This repository is publicly visible but does not yet grant an open-source
-license. Standard copyright restrictions therefore apply until the maintainer
-adds a `LICENSE` file. Selecting a licence is a legal/product decision and is
-the remaining prerequisite for third-party redistribution.
+TramTrace's original source code, documentation and hardware design files are
+licensed under the [Apache License 2.0](LICENSE). The [NOTICE](NOTICE) file
+records project attribution and identifies third-party material that retains
+its own terms.

@@ -29,6 +29,6 @@ green change reaches `main`.
 - Add regression tests for fixes and new edge cases.
 - Report vulnerabilities privately under `SECURITY.md`, not in a public issue.
 
-By submitting a contribution, you confirm you have the right to provide it.
-The repository currently has no open-source licence, so contribution and
-licensing terms should be agreed with the maintainer before substantial work.
+By submitting a contribution, you confirm that you have the right to provide
+it and agree that it is licensed under the repository's
+[Apache License 2.0](LICENSE), without additional terms or conditions.

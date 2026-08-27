@@ -44,3 +44,33 @@ def test_new_ota_image_uses_a_delayed_signed_manifest_checkpoint() -> None:
     version_decision = SOURCE.index("firmwareVersionIsNewer", confirmation)
     assert signature_check < confirmation < version_decision
     assert "esp_ota_mark_app_valid_cancel_rollback" in SOURCE
+
+
+def test_tls_ota_has_explicit_loop_stack_headroom() -> None:
+    match = re.search(r"SET_LOOP_TASK_STACK_SIZE\((\d+)\)", SOURCE)
+    assert match is not None
+    assert int(match.group(1)) >= 24 * 1024
+
+
+def test_serial_access_key_rotation_preserves_the_loaded_configuration() -> None:
+    assert 'if (verb == "access-key")' in SOURCE
+    assert "gConfig.boardKey = accessKey;" in SOURCE
+    assert "saveConfig(gConfig);" in SOURCE
+    assert "access-key|new-key" in SOURCE
+
+
+def test_live_payload_is_bounded_and_fully_decoded_before_json_parsing() -> None:
+    assert "constexpr size_t kMaximumPayloadBytes" in SOURCE
+    assert "BoundedStringStream payload(kMaximumPayloadBytes);" in SOURCE
+    assert "http.writeToStream(&payload)" in SOURCE
+    assert "deserializeJson(document, payload.data())" in SOURCE
+    assert "deserializeJson(document, http.getStream())" not in SOURCE
+
+
+def test_ota_manifest_and_binary_decode_http_framing_before_verification() -> None:
+    assert "BoundedStringStream manifestPayload(kOtaManifestMaximumBytes);" in SOURCE
+    assert "http.writeToStream(&manifestPayload)" in SOURCE
+    assert "deserializeJson(manifest, manifestPayload.data())" in SOURCE
+    assert "FirmwareUpdateStream firmwareStream" in SOURCE
+    assert "http.writeToStream(&firmwareStream)" in SOURCE
+    assert "http.getStreamPtr()" not in SOURCE

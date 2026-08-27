@@ -123,6 +123,7 @@ def test_missing_token_fails_without_exposing_a_secret(static_gtfs: StaticGTFS) 
     payload_response = client.get("/tramtrace_payload")
     assert payload_response.status_code == 503
     assert payload_response.json()["error"] == "missing_tfnsw_api_token"
+    assert "detail" not in payload_response.json()
     assert "test-token" not in payload_response.text
 
     health_response = client.get("/healthz")

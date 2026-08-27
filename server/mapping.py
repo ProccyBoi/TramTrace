@@ -105,10 +105,27 @@ SUPPORTED_ROUTES: Final[frozenset[str]] = frozenset(PCB_ROUTE_ORDERS)
 
 _SPACE_RE = re.compile(r"\s+")
 _PLATFORM_RE = re.compile(r"\bplatform\s*[a-z0-9-]*\b", re.IGNORECASE)
-_SUFFIX_RE = re.compile(
-    r"(?:\s+(?:light\s+rail(?:\s+station)?|station|stop))+$",
-    re.IGNORECASE,
+_STATION_SUFFIXES: Final[tuple[str, ...]] = (
+    " light rail station",
+    " light rail",
+    " station",
+    " stop",
 )
+
+
+def _strip_station_suffixes(value: str) -> str:
+    """Remove known trailing labels without a backtracking regular expression."""
+
+    text = _SPACE_RE.sub(" ", value).strip()
+    while text:
+        folded = text.casefold()
+        for suffix in _STATION_SUFFIXES:
+            if folded.endswith(suffix):
+                text = text[: -len(suffix)].rstrip()
+                break
+        else:
+            return text
+    return text
 
 
 def normalise_station_name(value: str | None) -> str:
@@ -119,7 +136,7 @@ def normalise_station_name(value: str | None) -> str:
     text = unicodedata.normalize("NFKD", str(value))
     text = text.replace("\u2018", "'").replace("\u2019", "'").replace("&", " and ")
     text = _PLATFORM_RE.sub(" ", text)
-    text = _SUFFIX_RE.sub("", text.strip())
+    text = _strip_station_suffixes(text)
     text = text.casefold()
     text = re.sub(r"[^a-z0-9]+", " ", text)
     return _SPACE_RE.sub(" ", text).strip()

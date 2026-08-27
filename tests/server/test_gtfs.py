@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from server.gtfs import StaticGTFS, normalise_trip_direction
-from server.mapping import PCB_ROUTE_ORDERS, canonical_station
+from server.mapping import PCB_ROUTE_ORDERS, canonical_station, normalise_station_name
 
 
 def test_pcb_aliases_are_exact_and_route_aware() -> None:
@@ -18,6 +18,11 @@ def test_pcb_aliases_are_exact_and_route_aware() -> None:
     assert canonical_station("L4", "Childrens Hospital") == "Childrens Hospital"
     assert canonical_station("L2", "Randwick") == "Randwick"
     assert canonical_station("L1", "Randwick") is None
+
+
+def test_station_suffix_normalisation_is_linear_and_repeatable() -> None:
+    assert normalise_station_name("Central Light Rail Station Stop") == "central"
+    assert normalise_station_name("Randwick STATION") == "randwick"
 
 
 def test_static_gtfs_uses_headsign_and_route_order(static_gtfs: StaticGTFS) -> None:

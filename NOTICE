@@ -1,0 +1,10 @@
+TramTrace
+Copyright 2026 ProccyBoi
+
+Except where otherwise noted, original TramTrace source code, documentation,
+and hardware design files are licensed under the Apache License, Version 2.0.
+
+Third-party dependencies, tools, assets, and data retain their respective
+copyright and licensing terms. In particular,
+hosting/worker/generated-transit-data.json contains a processed subset of
+Transport for NSW Open Data and is not relicensed by the TramTrace licence.
